@@ -1,0 +1,15 @@
+# Dumps de base et archives d'uploads : donnees client, jamais dans le depot
+backups/*.sql.gz
+backups/*.tar.gz
+
+# Filet de securite : les .gitignore de backend/ et frontend/ les couvrent deja,
+# mais une erreur de chemin ici pousserait JWT_SECRET et le mot de passe DB.
+.env
+node_modules/
+
+# Sortie generee par graphify (regenerable, contient un cache volumineux)
+graphify-out/
+
+# Reglages Claude Code propres a cette machine
+.claude/settings.local.json
+*.tmp.*

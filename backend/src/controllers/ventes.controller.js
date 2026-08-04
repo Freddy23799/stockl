@@ -1,0 +1,145 @@
+const pool = require('../config/db');
+const { logAudit } = require('../db/audit');
+const { sortieStockPourVente, StockInsuffisantError } = require('../services/stock.service');
+
+async function list(req, res) {
+  const { from, to, vendeuse_id, type } = req.query;
+  const conditions = [];
+  const params = [];
+
+  if (from) { params.push(from); conditions.push(`date >= $${params.length}`); }
+  if (to) { params.push(to); conditions.push(`date <= $${params.length}`); }
+  if (vendeuse_id) { params.push(vendeuse_id); conditions.push(`vendeuse_id = $${params.length}`); }
+  if (type) { params.push(type); conditions.push(`type = $${params.length}`); }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { rows } = await pool.query(
+    `SELECT v.*, vd.nom AS vendeuse_nom
+     FROM ventes v LEFT JOIN vendeuses vd ON vd.id = v.vendeuse_id
+     ${where} ORDER BY v.date DESC LIMIT 500`,
+    params
+  );
+  res.json(rows);
+}
+
+async function getById(req, res) {
+  const { rows: venteRows } = await pool.query(
+    `SELECT v.*, vd.nom AS vendeuse_nom FROM ventes v
+     LEFT JOIN vendeuses vd ON vd.id = v.vendeuse_id WHERE v.id = $1`,
+    [req.params.id]
+  );
+  const vente = venteRows[0];
+  if (!vente) return res.status(404).json({ message: 'Vente introuvable' });
+
+  const { rows: lignes } = await pool.query(
+    `SELECT vl.*, p.nom AS produit_nom, p.photo AS produit_photo
+     FROM ventes_lignes vl JOIN produits p ON p.id = vl.produit_id
+     WHERE vl.vente_id = $1`,
+    [req.params.id]
+  );
+  res.json({ ...vente, lignes });
+}
+
+async function create(req, res) {
+  let { type, vendeuse_id, vendeuse_code, lignes } = req.body;
+
+  // Identification par code a 6 chiffres : la vendeuse presente son code au
+  // moment de la vente, la vente est enregistree comme si c'etait elle qui
+  // avait vendu - sans compte ni session.
+  if (vendeuse_code && !vendeuse_id) {
+    const { rows: parCodeRows } = await pool.query('SELECT id, actif FROM vendeuses WHERE code = $1', [vendeuse_code]);
+    if (parCodeRows.length === 0) {
+      return res.status(400).json({ message: 'Aucune vendeuse ne correspond a ce code' });
+    }
+    type = 'vendeuse';
+    vendeuse_id = parCodeRows[0].id;
+  }
+
+  if (!['directe', 'vendeuse'].includes(type)) {
+    return res.status(400).json({ message: "type doit etre 'directe' ou 'vendeuse'" });
+  }
+  if (!Array.isArray(lignes) || lignes.length === 0) {
+    return res.status(400).json({ message: 'Au moins une ligne de vente est requise' });
+  }
+  for (const l of lignes) {
+    if (!l.produit_id || !(Number(l.quantite) > 0)) {
+      return res.status(400).json({ message: 'Chaque ligne doit avoir produit_id et une quantite > 0' });
+    }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (type === 'vendeuse') {
+      const { rows: vendeuseRows } = await client.query('SELECT * FROM vendeuses WHERE id = $1', [vendeuse_id]);
+      const vendeuse = vendeuseRows[0];
+      if (!vendeuse || !vendeuse.actif) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'La vente doit referencer une vendeuse active' });
+      }
+    }
+
+    const { rows: venteRows } = await client.query(
+      `INSERT INTO ventes (type, vendeuse_id, montant_total, auteur_id) VALUES ($1, $2, 0, $3) RETURNING *`,
+      [type, type === 'vendeuse' ? vendeuse_id : null, req.user.id]
+    );
+    const vente = venteRows[0];
+
+    // Verrouillage des produits dans un ordre constant (id croissant) pour eviter les deadlocks
+    // entre ventes concurrentes qui partagent des produits.
+    const lignesTriees = [...lignes].sort((a, b) => a.produit_id - b.produit_id);
+
+    let montantTotal = 0;
+    const lignesCreees = [];
+    for (const ligne of lignesTriees) {
+      const { rows: produitRows } = await client.query('SELECT * FROM produits WHERE id = $1', [ligne.produit_id]);
+      const produit = produitRows[0];
+      if (!produit || !produit.actif) {
+        throw new Error(`Produit ${ligne.produit_id} introuvable ou inactif`);
+      }
+
+      const { coutUnitaireApplique } = await sortieStockPourVente(client, {
+        produitId: ligne.produit_id,
+        quantite: ligne.quantite,
+        venteId: vente.id,
+        auteurId: req.user.id,
+      });
+
+      const prixVenteSnapshot = Number(produit.prix_vente);
+      montantTotal += prixVenteSnapshot * Number(ligne.quantite);
+
+      const { rows: ligneRows } = await client.query(
+        `INSERT INTO ventes_lignes (vente_id, produit_id, quantite, prix_vente_snapshot, cout_acquisition_snapshot)
+         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [vente.id, ligne.produit_id, ligne.quantite, prixVenteSnapshot, coutUnitaireApplique]
+      );
+      lignesCreees.push(ligneRows[0]);
+    }
+
+    const { rows: venteFinaleRows } = await client.query(
+      'UPDATE ventes SET montant_total = $1 WHERE id = $2 RETURNING *',
+      [montantTotal, vente.id]
+    );
+
+    await logAudit(client, {
+      typeOperation: 'vente_creation',
+      entiteId: vente.id,
+      utilisateurId: req.user.id,
+      details: { type, vendeuse_id: type === 'vendeuse' ? vendeuse_id : null, montant_total: montantTotal },
+    });
+
+    await client.query('COMMIT');
+    res.status(201).json({ ...venteFinaleRows[0], lignes: lignesCreees });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err instanceof StockInsuffisantError) {
+      return res.status(409).json({ message: err.message, code: 'STOCK_INSUFFISANT', produit_id: err.produitId, disponible: err.disponible, demande: err.demande });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { list, getById, create };

@@ -1,0 +1,35 @@
+# -----------------------------------------------------------------------------
+# DEV ONLY - ce fichier ne sert JAMAIS en production.
+#
+# En production, PostgreSQL tourne nativement sur la machine Windows du client
+# (pas de conteneur, pas de Docker). Ce docker-compose sert uniquement a
+# simuler ce PostgreSQL natif ici, sur la machine de dev Ubuntu, sans polluer
+# cette machine avec une installation Postgres native (qui sert a d'autres
+# projets en parallele).
+#
+# Port choisi APRES verification des ports deja utilises sur cette machine de
+# dev (`docker ps` + `ss -tulpn`) : 5435 et 5437 sont deja pris par d'autres
+# projets Postgres. Port retenu pour ce projet : 5439.
+# -----------------------------------------------------------------------------
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: parfumerie-machibel-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: machibel
+      POSTGRES_PASSWORD: machibel
+      POSTGRES_DB: machibel
+    ports:
+      - "5439:5432"
+    volumes:
+      - parfumerie-machibel-pgdata-dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U machibel -d machibel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  parfumerie-machibel-pgdata-dev:
+    name: parfumerie-machibel-pgdata-dev
