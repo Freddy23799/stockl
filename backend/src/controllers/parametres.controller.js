@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
+const { finaliserFichier, nettoyerAnciennesVersions } = require('../middleware/upload.middleware');
 
 async function get(req, res) {
   const { rows } = await pool.query('SELECT * FROM parametres WHERE id = 1');
@@ -43,7 +44,11 @@ async function update(req, res) {
 async function uploadLogo(req, res) {
   if (!req.file) return res.status(400).json({ message: 'Aucun fichier recu' });
 
-  const relativePath = `uploads/logo/${req.file.filename}`;
+  // Le fichier n'est renomme en "logo-machibel.<ext>" qu'ici, une fois l'envoi
+  // recu en entier : un envoi interrompu ne detruit jamais le logo en place.
+  const relativePath = finaliserFichier(req.file, 'logo', 'logo-machibel');
+  nettoyerAnciennesVersions('logo', 'logo-machibel', relativePath);
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');

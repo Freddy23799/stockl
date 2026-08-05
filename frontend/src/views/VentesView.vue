@@ -1,9 +1,18 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import api from '../api/client'
-import Modal from '../components/Modal.vue'
-import Pagination from '../components/Pagination.vue'
+import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
+import PageHeader from '../components/ui/PageHeader.vue'
+import Tabs from '../components/ui/Tabs.vue'
+import Modal from '../components/ui/Modal.vue'
+import EmptyState from '../components/ui/EmptyState.vue'
+import TableSkeleton from '../components/ui/TableSkeleton.vue'
+import StatCard from '../components/ui/StatCard.vue'
+import Pagination from '../components/ui/Pagination.vue'
+import Icon from '../components/ui/Icon.vue'
+
+const toasts = useToastStore()
 
 const produits = ref([])
 const vendeuses = ref([])
@@ -11,7 +20,14 @@ const ventes = ref([])
 const loading = ref(true)
 const erreur = ref('')
 
-// --- Panier / nouvelle vente ---
+const ongletActif = ref('caisse')
+const onglets = computed(() => [
+  { id: 'caisse', label: 'Nouvelle vente', icon: 'cart', count: lignesPanier.value.length || null },
+  { id: 'historique', label: 'Historique', icon: 'history', count: total.value },
+])
+
+/* --- Caisse -------------------------------------------------------------- */
+
 const typeVente = ref('directe')
 const codeVendeuse = ref('')
 const vendeuseTrouvee = ref(null)
@@ -19,12 +35,46 @@ const codeRecherche = ref(false)
 const codeErreur = ref('')
 const produitSelectionne = ref('')
 const quantiteSelectionnee = ref(1)
+const rechercheProduit = ref('')
 const lignesPanier = ref([])
-const venteErreur = ref('')
 const venteSoumission = ref(false)
 
 const totalPanier = computed(() =>
   lignesPanier.value.reduce((s, l) => s + l.prix_vente * l.quantite, 0)
+)
+const articlesPanier = computed(() =>
+  lignesPanier.value.reduce((s, l) => s + Number(l.quantite || 0), 0)
+)
+
+const produitsFiltres = computed(() => {
+  const q = rechercheProduit.value.trim().toLowerCase()
+  if (!q) return produits.value
+  return produits.value.filter((p) => p.nom.toLowerCase().includes(q))
+})
+
+const produitChoisi = computed(
+  () => produits.value.find((p) => p.id === Number(produitSelectionne.value)) || null
+)
+
+// Le stock affiche tient compte de ce qui est deja reserve dans le panier :
+// sinon on peut ajouter deux fois la meme quantite et se croire couvert.
+const stockRestant = computed(() => {
+  if (!produitChoisi.value) return 0
+  const deja = lignesPanier.value.find((l) => l.produit_id === produitChoisi.value.id)
+  return Number(produitChoisi.value.quantite_stock) - Number(deja?.quantite || 0)
+})
+
+const depassementStock = computed(
+  () => !!produitChoisi.value && Number(quantiteSelectionnee.value) > stockRestant.value
+)
+
+function stockDe(produitId) {
+  const p = produits.value.find((x) => x.id === produitId)
+  return p ? Number(p.quantite_stock) : Infinity
+}
+
+const panierValide = computed(() =>
+  lignesPanier.value.every((l) => Number(l.quantite) > 0 && Number(l.quantite) <= stockDe(l.produit_id))
 )
 
 let timeoutRecherche = null
@@ -50,9 +100,13 @@ watch(codeVendeuse, (val) => {
   }, 300)
 })
 
+function choisirProduit(p) {
+  produitSelectionne.value = p.id
+  quantiteSelectionnee.value = 1
+}
+
 function ajouterLigne() {
-  venteErreur.value = ''
-  const produit = produits.value.find((p) => p.id === Number(produitSelectionne.value))
+  const produit = produitChoisi.value
   if (!produit || quantiteSelectionnee.value <= 0) return
 
   const existante = lignesPanier.value.find((l) => l.produit_id === produit.id)
@@ -62,6 +116,7 @@ function ajouterLigne() {
     lignesPanier.value.push({
       produit_id: produit.id,
       nom: produit.nom,
+      unite_stock: produit.unite_stock,
       prix_vente: Number(produit.prix_vente),
       quantite: Number(quantiteSelectionnee.value),
     })
@@ -74,10 +129,21 @@ function retirerLigne(index) {
   lignesPanier.value.splice(index, 1)
 }
 
+// Une quantite vide ou nulle saisie a la main viderait la ligne sans la retirer :
+// on ramene au minimum vendable plutot que d'envoyer un zero au serveur.
+function normaliserLigne(ligne) {
+  const q = Number(ligne.quantite)
+  if (!Number.isFinite(q) || q < 1) ligne.quantite = 1
+}
+
+function viderPanier() {
+  lignesPanier.value = []
+}
+
 async function validerVente() {
   if (!lignesPanier.value.length) return
-  venteErreur.value = ''
   venteSoumission.value = true
+  const montant = totalPanier.value
   try {
     const payload = {
       type: typeVente.value,
@@ -89,42 +155,75 @@ async function validerVente() {
     typeVente.value = 'directe'
     codeVendeuse.value = ''
     vendeuseTrouvee.value = null
+    produitSelectionne.value = ''
+    rechercheProduit.value = ''
+    toasts.succes(`Vente enregistree — ${formatMontant(montant)}`)
     await chargerVentes()
     await chargerProduits()
   } catch (err) {
-    venteErreur.value = err.response?.data?.message || 'Erreur lors de l\'enregistrement de la vente'
+    toasts.erreur(err.response?.data?.message || 'Erreur lors de l\'enregistrement de la vente')
   } finally {
     venteSoumission.value = false
   }
 }
 
-// --- Liste des ventes ---
+/* --- Historique ---------------------------------------------------------- */
+
 const filtres = reactive({ from: '', to: '', vendeuse_id: '' })
 const detailVisible = ref(false)
 const detailVente = ref(null)
 const detailChargement = ref(false)
+const chargementVentes = ref(false)
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
 
+const filtreActif = computed(() => !!(filtres.from || filtres.to || filtres.vendeuse_id))
+
+// Statistiques calculees sur la page deja chargee : aucun appel supplementaire.
+const totalAffiche = computed(() => ventes.value.reduce((s, v) => s + Number(v.montant_total), 0))
+const panierMoyen = computed(() =>
+  ventes.value.length ? totalAffiche.value / ventes.value.length : 0
+)
+
 async function chargerVentes() {
-  const params = { page: page.value, pageSize }
-  if (filtres.from) params.from = filtres.from
-  if (filtres.to) params.to = filtres.to
-  if (filtres.vendeuse_id) params.vendeuse_id = filtres.vendeuse_id
-  const { data } = await api.get('/ventes', { params })
-  ventes.value = data.data
-  total.value = data.total
+  chargementVentes.value = true
+  try {
+    const params = { page: page.value, pageSize }
+    if (filtres.from) params.from = filtres.from
+    if (filtres.to) params.to = filtres.to
+    if (filtres.vendeuse_id) params.vendeuse_id = filtres.vendeuse_id
+    const { data } = await api.get('/ventes', { params })
+    ventes.value = data.data
+    total.value = data.total
+  } finally {
+    chargementVentes.value = false
+  }
 }
 
-function filtrerVentes() {
+async function filtrerVentes() {
   page.value = 1
-  chargerVentes()
+  try {
+    await chargerVentes()
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur lors du filtrage')
+  }
 }
 
-function changerPage(nouvellePage) {
+function reinitialiserFiltres() {
+  filtres.from = ''
+  filtres.to = ''
+  filtres.vendeuse_id = ''
+  filtrerVentes()
+}
+
+async function changerPage(nouvellePage) {
   page.value = nouvellePage
-  chargerVentes()
+  try {
+    await chargerVentes()
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur de chargement')
+  }
 }
 
 async function chargerProduits() {
@@ -135,6 +234,7 @@ async function chargerProduits() {
 async function ouvrirDetail(v) {
   detailVisible.value = true
   detailChargement.value = true
+  detailVente.value = null
   try {
     const { data } = await api.get(`/ventes/${v.id}`)
     detailVente.value = data
@@ -162,143 +262,444 @@ onMounted(async () => {
 
 <template>
   <div>
-    <div class="page-header">
-      <h1>Ventes</h1>
-    </div>
+    <PageHeader
+      title="Ventes"
+      subtitle="Encaissez a la caisse ou attribuez la vente a une vendeuse par son code : le stock est decremente immediatement."
+    />
 
-    <p v-if="erreur" class="error-message">{{ erreur }}</p>
+    <p v-if="erreur" class="alert alert-danger mb-4">
+      <Icon name="alert" :size="16" /><span>{{ erreur }}</span>
+    </p>
 
-    <div class="card">
-      <h2>Nouvelle vente</h2>
+    <Tabs v-model="ongletActif" :tabs="onglets" />
 
-      <div class="form-row-inline">
-        <div class="form-row">
-          <label>Type de vente</label>
-          <select v-model="typeVente">
-            <option value="directe">Directe (boutique)</option>
-            <option value="vendeuse">Attribuee a une vendeuse</option>
-          </select>
+    <!-- Caisse ---------------------------------------------------------- -->
+    <div v-if="ongletActif === 'caisse'" class="caisse">
+      <div class="stack">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h2>Type de vente</h2>
+              <p class="card-head-sub">A qui cette vente doit-elle etre attribuee ?</p>
+            </div>
+          </div>
+          <div class="card-body stack" style="gap: 12px">
+            <div class="btn-group">
+              <button
+                type="button"
+                :class="{ 'is-active': typeVente === 'directe' }"
+                @click="typeVente = 'directe'"
+              >
+                <Icon name="building" :size="15" /> Boutique
+              </button>
+              <button
+                type="button"
+                :class="{ 'is-active': typeVente === 'vendeuse' }"
+                @click="typeVente = 'vendeuse'"
+              >
+                <Icon name="users" :size="15" /> Vendeuse
+              </button>
+            </div>
+
+            <div v-if="typeVente === 'vendeuse'" class="field">
+              <label>Code vendeuse</label>
+              <input
+                v-model="codeVendeuse"
+                maxlength="6"
+                inputmode="numeric"
+                placeholder="123456"
+                class="code-input"
+              />
+              <span v-if="codeRecherche" class="field-hint row">
+                <span class="spinner" /> Recherche du code...
+              </span>
+              <span v-else-if="codeErreur" class="field-error">{{ codeErreur }}</span>
+              <span v-else-if="vendeuseTrouvee" class="badge success mt-2">
+                <Icon name="check" :size="13" /> {{ vendeuseTrouvee.nom }}
+              </span>
+              <span v-else class="field-hint">Les 6 chiffres remis a la vendeuse</span>
+            </div>
+          </div>
         </div>
-        <div class="form-row" v-if="typeVente === 'vendeuse'">
-          <label>Code vendeuse (6 chiffres)</label>
-          <input v-model="codeVendeuse" maxlength="6" inputmode="numeric" placeholder="123456" />
+
+        <div class="card">
+          <div class="card-head">
+            <div class="search">
+              <Icon name="search" :size="15" />
+              <input v-model="rechercheProduit" type="search" placeholder="Rechercher un produit..." />
+            </div>
+            <span class="small muted">{{ produitsFiltres.length }} produit(s)</span>
+          </div>
+
+          <div class="card-body card-body-flush">
+            <TableSkeleton v-if="loading" :rows="5" :cols="2" />
+
+            <EmptyState
+              v-else-if="!produitsFiltres.length && rechercheProduit"
+              icon="search"
+              title="Aucun resultat"
+              :desc="`Aucun produit ne correspond a « ${rechercheProduit} ».`"
+            >
+              <button type="button" @click="rechercheProduit = ''">Effacer la recherche</button>
+            </EmptyState>
+
+            <EmptyState
+              v-else-if="!produitsFiltres.length"
+              icon="package"
+              title="Aucun produit en catalogue"
+              desc="Creez d'abord vos produits : sans catalogue, aucune vente n'est possible."
+            >
+              <RouterLink to="/produits" class="btn primary">
+                <Icon name="package" :size="15" /> Aller au catalogue
+              </RouterLink>
+            </EmptyState>
+
+            <ul v-else class="picker">
+              <li v-for="p in produitsFiltres" :key="p.id">
+                <button
+                  type="button"
+                  class="picker-item"
+                  :class="{ 'is-active': Number(produitSelectionne) === p.id }"
+                  @click="choisirProduit(p)"
+                >
+                  <span class="picker-name">{{ p.nom }}</span>
+                  <span class="picker-price tnum">{{ formatMontant(p.prix_vente) }}</span>
+                  <span
+                    class="badge"
+                    :class="Number(p.quantite_stock) <= Number(p.seuil_alerte) ? 'danger' : 'success'"
+                  >
+                    {{ formatQuantite(p.quantite_stock) }} {{ p.unite_stock }}
+                  </span>
+                </button>
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="produitChoisi" class="card-foot" style="align-items: flex-end">
+            <div class="field" style="flex: 1; min-width: 160px">
+              <label>{{ produitChoisi.nom }}</label>
+              <input
+                v-model.number="quantiteSelectionnee"
+                type="number"
+                min="1"
+                step="1"
+                @keyup.enter="!depassementStock && ajouterLigne()"
+              />
+              <span class="field-hint tnum">
+                Disponible : {{ formatQuantite(stockRestant) }} {{ produitChoisi.unite_stock }}
+              </span>
+            </div>
+            <button type="button" class="primary" :disabled="depassementStock" @click="ajouterLigne">
+              <Icon name="plus" :size="15" /> Ajouter
+            </button>
+          </div>
+
+          <div v-if="depassementStock" class="card-foot">
+            <p class="alert alert-warning" style="width: 100%">
+              <Icon name="warning" :size="16" />
+              <span>
+                Stock insuffisant : il ne reste que
+                {{ formatQuantite(stockRestant) }} {{ produitChoisi.unite_stock }}
+                <template v-if="lignesPanier.some((l) => l.produit_id === produitChoisi.id)">
+                  une fois le panier deduit
+                </template>.
+              </span>
+            </p>
+          </div>
         </div>
       </div>
 
-      <p v-if="typeVente === 'vendeuse' && codeRecherche" style="font-size: 13px">Recherche...</p>
-      <p v-if="typeVente === 'vendeuse' && vendeuseTrouvee" class="badge success" style="width: fit-content">
-        {{ vendeuseTrouvee.nom }}
-      </p>
-      <p v-if="typeVente === 'vendeuse' && codeErreur" class="error-message">{{ codeErreur }}</p>
+      <!-- Panier -->
+      <div class="card panier">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h2>Panier</h2>
+            <p class="card-head-sub">{{ formatQuantite(articlesPanier) }} article(s)</p>
+          </div>
+          <button
+            v-if="lignesPanier.length"
+            type="button"
+            class="btn-sm btn-ghost"
+            style="color: var(--danger)"
+            @click="viderPanier"
+          >
+            <Icon name="trash" :size="14" /> Vider
+          </button>
+        </div>
 
-      <div class="form-row-inline">
-        <div class="form-row" style="flex: 2">
-          <label>Produit</label>
-          <select v-model="produitSelectionne">
-            <option value="" disabled>Choisir un produit</option>
-            <option v-for="p in produits" :key="p.id" :value="p.id">
-              {{ p.nom }} — {{ formatMontant(p.prix_vente) }} ({{ p.quantite_stock }} {{ p.unite_stock }} en stock)
-            </option>
-          </select>
+        <div class="card-body card-body-flush">
+          <EmptyState
+            v-if="!lignesPanier.length"
+            icon="cart"
+            title="Panier vide"
+            desc="Choisissez un produit dans la liste, indiquez la quantite puis ajoutez-le au panier."
+          />
+
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Produit</th>
+                  <th style="width: 96px">Qte</th>
+                  <th class="td-num">Sous-total</th>
+                  <th style="width: 40px"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(l, i) in lignesPanier" :key="l.produit_id">
+                  <td>
+                    <div class="td-strong">{{ l.nom }}</div>
+                    <div class="small muted tnum">{{ formatMontant(l.prix_vente) }} / {{ l.unite_stock }}</div>
+                    <span v-if="Number(l.quantite) > stockDe(l.produit_id)" class="badge danger mt-2">
+                      <Icon name="warning" :size="12" /> Stock insuffisant
+                    </span>
+                  </td>
+                  <td>
+                    <input
+                      v-model.number="l.quantite"
+                      type="number"
+                      min="1"
+                      step="1"
+                      class="qte-input"
+                      @change="normaliserLigne(l)"
+                    />
+                  </td>
+                  <td class="td-num td-strong tnum nowrap">{{ formatMontant(l.prix_vente * l.quantite) }}</td>
+                  <td class="td-actions">
+                    <button
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      title="Retirer"
+                      style="color: var(--danger)"
+                      @click="retirerLigne(i)"
+                    >
+                      <Icon name="x" :size="15" />
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <div class="form-row">
-          <label>Quantite</label>
-          <input v-model="quantiteSelectionnee" type="number" min="1" step="1" />
-        </div>
-        <div class="form-row" style="justify-content: flex-end">
-          <label>&nbsp;</label>
-          <button type="button" @click="ajouterLigne" :disabled="!produitSelectionne">Ajouter</button>
+
+        <div class="card-foot total-foot">
+          <div class="row-between" style="width: 100%">
+            <span class="stat-label">Total a encaisser</span>
+            <span class="total-montant tnum">{{ formatMontant(totalPanier) }}</span>
+          </div>
+          <button
+            type="button"
+            class="primary btn-block"
+            :disabled="
+              !lignesPanier.length ||
+              venteSoumission ||
+              !panierValide ||
+              (typeVente === 'vendeuse' && !vendeuseTrouvee)
+            "
+            @click="validerVente"
+          >
+            <span v-if="venteSoumission" class="spinner" />
+            <Icon v-else name="check" :size="15" />
+            Valider la vente
+          </button>
+          <p v-if="typeVente === 'vendeuse' && !vendeuseTrouvee" class="small muted">
+            Saisissez un code vendeuse valide pour valider.
+          </p>
         </div>
       </div>
-
-      <table v-if="lignesPanier.length">
-        <thead><tr><th>Produit</th><th>Quantite</th><th>Prix unitaire</th><th>Sous-total</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="(l, i) in lignesPanier" :key="l.produit_id">
-            <td>{{ l.nom }}</td>
-            <td>{{ formatQuantite(l.quantite) }}</td>
-            <td>{{ formatMontant(l.prix_vente) }}</td>
-            <td>{{ formatMontant(l.prix_vente * l.quantite) }}</td>
-            <td><button type="button" class="danger" @click="retirerLigne(i)">Retirer</button></td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p v-if="lignesPanier.length" style="font-weight: 700; font-size: 18px; color: var(--text-h)">
-        Total : {{ formatMontant(totalPanier) }}
-      </p>
-
-      <p v-if="venteErreur" class="error-message">{{ venteErreur }}</p>
-
-      <button
-        type="button"
-        class="primary"
-        :disabled="!lignesPanier.length || venteSoumission || (typeVente === 'vendeuse' && !vendeuseTrouvee)"
-        @click="validerVente"
-      >
-        {{ venteSoumission ? 'Enregistrement...' : 'Valider la vente' }}
-      </button>
     </div>
 
-    <div class="card">
-      <h2>Historique des ventes</h2>
-
-      <div class="toolbar">
-        <div class="form-row">
-          <label>Du</label>
-          <input v-model="filtres.from" type="date" />
-        </div>
-        <div class="form-row">
-          <label>Au</label>
-          <input v-model="filtres.to" type="date" />
-        </div>
-        <div class="form-row">
-          <label>Vendeuse</label>
-          <select v-model="filtres.vendeuse_id">
-            <option value="">Toutes</option>
-            <option v-for="v in vendeuses" :key="v.id" :value="v.id">{{ v.nom }}</option>
-          </select>
-        </div>
-        <div class="form-row" style="justify-content: flex-end">
-          <label>&nbsp;</label>
-          <button type="button" @click="filtrerVentes">Filtrer</button>
-        </div>
+    <!-- Historique ------------------------------------------------------- -->
+    <div v-else>
+      <div class="grid grid-stats mb-4">
+        <StatCard label="Ventes trouvees" :value="total" icon="receipt" tone="accent"
+          :hint="filtreActif ? 'Sur la periode filtree' : 'Toutes periodes'" />
+        <StatCard label="Total de la page" :value="formatMontant(totalAffiche)" icon="wallet" tone="success"
+          :hint="`${ventes.length} vente(s) affichee(s)`" />
+        <StatCard label="Panier moyen" :value="formatMontant(panierMoyen)" icon="trending"
+          hint="Sur les ventes affichees" />
       </div>
 
-      <p v-if="loading">Chargement...</p>
-      <table v-else>
-        <thead><tr><th>Type</th><th>Montant</th><th>Date</th><th></th></tr></thead>
-        <tbody>
-          <tr v-for="v in ventes" :key="v.id">
-            <td>{{ v.type === 'directe' ? 'Directe' : v.vendeuse_nom }}</td>
-            <td>{{ formatMontant(v.montant_total) }}</td>
-            <td>{{ formatDate(v.date) }}</td>
-            <td><button type="button" @click="ouvrirDetail(v)">Details</button></td>
-          </tr>
-          <tr v-if="!ventes.length"><td colspan="4">Aucune vente</td></tr>
-        </tbody>
-      </table>
-      <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
+      <div class="card">
+        <div class="card-head">
+          <div class="toolbar" style="width: 100%">
+            <div class="field">
+              <label>Du</label>
+              <input v-model="filtres.from" type="date" />
+            </div>
+            <div class="field">
+              <label>Au</label>
+              <input v-model="filtres.to" type="date" />
+            </div>
+            <div class="field" style="min-width: 180px">
+              <label>Vendeuse</label>
+              <select v-model="filtres.vendeuse_id">
+                <option value="">Toutes</option>
+                <option v-for="v in vendeuses" :key="v.id" :value="v.id">{{ v.nom }}</option>
+              </select>
+            </div>
+            <button type="button" class="primary" @click="filtrerVentes">
+              <Icon name="filter" :size="15" /> Filtrer
+            </button>
+            <button v-if="filtreActif" type="button" class="btn-ghost" @click="reinitialiserFiltres">
+              Reinitialiser
+            </button>
+          </div>
+        </div>
+
+        <div class="card-body card-body-flush">
+          <TableSkeleton v-if="loading || chargementVentes" :rows="6" :cols="4" />
+
+          <EmptyState
+            v-else-if="!ventes.length && filtreActif"
+            icon="search"
+            title="Aucune vente sur cette periode"
+            desc="Elargissez les dates ou retirez le filtre vendeuse pour voir plus de resultats."
+          >
+            <button type="button" @click="reinitialiserFiltres">Reinitialiser les filtres</button>
+          </EmptyState>
+
+          <EmptyState
+            v-else-if="!ventes.length"
+            icon="receipt"
+            title="Aucune vente enregistree"
+            desc="Les ventes validees a la caisse apparaissent ici, avec leur detail ligne par ligne."
+          >
+            <button type="button" class="primary" @click="ongletActif = 'caisse'">
+              <Icon name="cart" :size="15" /> Enregistrer une vente
+            </button>
+          </EmptyState>
+
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Vente</th>
+                  <th>Attribuee a</th>
+                  <th class="td-num">Montant</th>
+                  <th class="td-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="v in ventes" :key="v.id">
+                  <td>
+                    <div class="td-strong nowrap">{{ formatDate(v.date) }}</div>
+                    <div class="small muted">#{{ v.id }}</div>
+                  </td>
+                  <td>
+                    <span class="badge" :class="v.type === 'directe' ? 'info' : 'accent'">
+                      <Icon :name="v.type === 'directe' ? 'building' : 'users'" :size="12" />
+                      {{ v.type === 'directe' ? 'Boutique' : v.vendeuse_nom }}
+                    </span>
+                  </td>
+                  <td class="td-num td-strong tnum">{{ formatMontant(v.montant_total) }}</td>
+                  <td class="td-actions">
+                    <button type="button" class="btn-sm btn-ghost" title="Detail" @click="ouvrirDetail(v)">
+                      <Icon name="eye" :size="15" />
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card-foot">
+          <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
+        </div>
+      </div>
     </div>
 
+    <!-- Detail d'une vente -->
     <Modal v-if="detailVisible" title="Detail de la vente" @close="detailVisible = false">
-      <p v-if="detailChargement">Chargement...</p>
+      <TableSkeleton v-if="detailChargement" :rows="3" :cols="4" />
       <template v-else-if="detailVente">
-        <p><strong>Type :</strong> {{ detailVente.type === 'directe' ? 'Directe' : detailVente.vendeuse_nom }}</p>
-        <p><strong>Date :</strong> {{ formatDate(detailVente.date) }}</p>
-        <table>
-          <thead><tr><th>Produit</th><th>Qte</th><th>Prix</th><th>Sous-total</th></tr></thead>
-          <tbody>
-            <tr v-for="l in detailVente.lignes" :key="l.id">
-              <td>{{ l.produit_nom }}</td>
-              <td>{{ formatQuantite(l.quantite) }}</td>
-              <td>{{ formatMontant(l.prix_vente_snapshot) }}</td>
-              <td>{{ formatMontant(l.prix_vente_snapshot * l.quantite) }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <p style="font-weight: 700; margin-top: 8px">Total : {{ formatMontant(detailVente.montant_total) }}</p>
+        <div class="row wrap mb-3" style="gap: 8px">
+          <span class="badge" :class="detailVente.type === 'directe' ? 'info' : 'accent'">
+            <Icon :name="detailVente.type === 'directe' ? 'building' : 'users'" :size="12" />
+            {{ detailVente.type === 'directe' ? 'Boutique' : detailVente.vendeuse_nom }}
+          </span>
+          <span class="small muted">{{ formatDate(detailVente.date) }}</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Produit</th>
+                <th class="td-num">Qte</th>
+                <th class="td-num">Prix</th>
+                <th class="td-num">Sous-total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="l in detailVente.lignes" :key="l.id">
+                <td class="td-strong">{{ l.produit_nom }}</td>
+                <td class="td-num tnum">{{ formatQuantite(l.quantite) }}</td>
+                <td class="td-num tnum muted">{{ formatMontant(l.prix_vente_snapshot) }}</td>
+                <td class="td-num tnum td-strong">
+                  {{ formatMontant(l.prix_vente_snapshot * l.quantite) }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="row-between mt-4">
+          <span class="stat-label">Total</span>
+          <span class="total-montant tnum">{{ formatMontant(detailVente.montant_total) }}</span>
+        </div>
       </template>
     </Modal>
   </div>
 </template>
+
+<style scoped>
+/* Ecran de caisse : catalogue a gauche, panier a droite et visible en
+   permanence sur grand ecran pour verifier ce qu'on encaisse. */
+.caisse {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+@media (min-width: 1040px) {
+  .caisse { grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); }
+  .panier { position: sticky; top: calc(var(--topbar-h) + 16px); }
+}
+
+.picker { list-style: none; margin: 0; padding: 0; max-height: 340px; overflow-y: auto; }
+.picker-item {
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  text-align: left;
+}
+.picker-item:hover:not(:disabled) { background: var(--bg-subtle); border-color: var(--border); }
+.picker-item.is-active { background: var(--accent-soft); }
+.picker-item.is-active .picker-name { color: var(--accent-text); }
+.picker-name { flex: 1; min-width: 0; font-weight: 550; color: var(--text-h); overflow: hidden; text-overflow: ellipsis; }
+.picker-price { color: var(--text-muted); font-size: 12.5px; }
+
+.qte-input { padding: 5px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+
+.code-input {
+  font-family: var(--mono);
+  font-size: 19px;
+  letter-spacing: 0.28em;
+  text-align: center;
+}
+
+.total-foot { flex-direction: column; align-items: stretch; gap: 10px; }
+.total-montant {
+  font-size: 24px;
+  font-weight: 680;
+  color: var(--text-h);
+  letter-spacing: -0.025em;
+}
+</style>

@@ -1,69 +1,36 @@
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
-import Modal from '../components/Modal.vue'
 import { useModulesStore } from '../stores/modules'
 import { useAuthStore } from '../stores/auth'
+import { useThemeStore } from '../stores/theme'
+import { useToastStore } from '../stores/toasts'
+import { formatDateCourt } from '../utils/format'
+import PageHeader from '../components/ui/PageHeader.vue'
+import Tabs from '../components/ui/Tabs.vue'
+import Modal from '../components/ui/Modal.vue'
+import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
+import EmptyState from '../components/ui/EmptyState.vue'
+import Icon from '../components/ui/Icon.vue'
 
 const modules = useModulesStore()
 const auth = useAuthStore()
+const theme = useThemeStore()
+const toasts = useToastStore()
 
 const parametres = ref(null)
+const utilisateurs = ref([])
 const loading = ref(true)
 const erreur = ref('')
 
-const methodeSoumission = ref(false)
-const methodeMessage = ref('')
+const ongletActif = ref('general')
 
-const moduleEnCours = ref(null)
-
-const LABEL_MODULE = {
-  module_ventes: 'Ventes (et Vendeuses)',
-  module_fournisseurs: 'Fournisseurs',
-  module_depenses: 'Depenses',
-}
-
-async function basculerModule(champ, valeur) {
-  if (!valeur) {
-    const ok = confirm(
-      `Desactiver "${LABEL_MODULE[champ]}" ? Toutes les pages, menus et donnees lies a ce module disparaitront ` +
-      `immediatement de l'interface (rien n'est supprime en base - tout reapparait tel quel si vous reactivez).`
-    )
-    if (!ok) return
-  }
-  moduleEnCours.value = champ
-  try {
-    const { data } = await api.put('/parametres', { [champ]: valeur })
-    parametres.value = data
-    await modules.charger()
-  } catch (err) {
-    erreur.value = err.response?.data?.message || 'Erreur lors du changement de module'
-    // Revert visuel si l'appel echoue
-    parametres.value[champ] = !valeur
-  } finally {
-    moduleEnCours.value = null
-  }
-}
-
-const logoFichier = ref(null)
-const logoEnvoi = ref(false)
-const logoErreur = ref('')
-
-const utilisateurs = ref([])
-const compteVisible = ref(false)
-const compteForm = reactive({ prenom: '', nom: '' })
-const compteErreur = ref('')
-const compteSoumission = ref(false)
-// Identifiant + mot de passe generes, montres UNE SEULE FOIS apres creation.
-// Le mot de passe n'est stocke qu'en hash cote serveur : une fois cet encart
-// ferme, il est definitivement irrecuperable.
-const compteCree = ref(null)
-
-const motDePasseVisible = ref(false)
-const motDePasseForm = reactive({ actuel: '', nouveau: '', confirmation: '' })
-const motDePasseErreur = ref('')
-const motDePasseMessage = ref('')
-const motDePasseSoumission = ref(false)
+const onglets = computed(() => [
+  { id: 'general', label: 'General', icon: 'settings' },
+  { id: 'modules', label: 'Modules', icon: 'toggle' },
+  { id: 'securite', label: 'Securite', icon: 'shield' },
+  { id: 'comptes', label: 'Comptes', icon: 'users', count: utilisateurs.value.length },
+])
 
 async function charger() {
   loading.value = true
@@ -84,28 +51,87 @@ async function charger() {
 
 onMounted(charger)
 
-async function changerMethode() {
-  methodeSoumission.value = true
-  methodeMessage.value = ''
+/* --- Modules ------------------------------------------------------------ */
+
+const DESCRIPTION_MODULE = {
+  module_ventes: {
+    titre: 'Ventes et vendeuses',
+    desc: 'Enregistrement des ventes, attribution aux vendeuses, chiffre d\'affaires dans les rapports.',
+  },
+  module_fournisseurs: {
+    titre: 'Fournisseurs',
+    desc: 'Rattachement des entrees de stock a un fournisseur et suivi des achats par source.',
+  },
+  module_depenses: {
+    titre: 'Depenses',
+    desc: 'Saisie des charges hors marchandise et leur deduction du bilan net.',
+  },
+}
+
+const moduleEnCours = ref(null)
+const moduleADesactiver = ref(null)
+
+async function appliquerModule(champ, valeur) {
+  moduleEnCours.value = champ
   try {
-    const { data } = await api.put('/parametres', { methode_valorisation: parametres.value.methode_valorisation })
+    const { data } = await api.put('/parametres', { [champ]: valeur })
     parametres.value = data
-    methodeMessage.value = 'Methode de valorisation mise a jour.'
+    await modules.charger()
+    toasts.succes(`${DESCRIPTION_MODULE[champ].titre} ${valeur ? 'active' : 'desactive'}`)
   } catch (err) {
-    methodeMessage.value = err.response?.data?.message || 'Erreur'
+    toasts.erreur(err.response?.data?.message || 'Erreur lors du changement de module')
+    // Retour visuel a l'etat precedent si le serveur a refuse.
+    parametres.value[champ] = !valeur
+  } finally {
+    moduleEnCours.value = null
+    moduleADesactiver.value = null
+  }
+}
+
+// Activer est sans risque ; desactiver fait disparaitre des pages entieres de
+// l'interface, donc on demande confirmation dans ce sens uniquement.
+function basculerModule(champ) {
+  const valeur = !parametres.value[champ]
+  if (!valeur) {
+    moduleADesactiver.value = champ
+    return
+  }
+  appliquerModule(champ, true)
+}
+
+/* --- Methode de valorisation -------------------------------------------- */
+
+const methodeSoumission = ref(false)
+
+async function changerMethode(valeur) {
+  if (valeur === parametres.value.methode_valorisation) return
+  methodeSoumission.value = true
+  try {
+    const { data } = await api.put('/parametres', { methode_valorisation: valeur })
+    parametres.value = data
+    toasts.succes(`Valorisation du stock : ${valeur}`)
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur')
   } finally {
     methodeSoumission.value = false
   }
 }
 
+/* --- Logo --------------------------------------------------------------- */
+
+const logoFichier = ref(null)
+const logoApercu = ref('')
+const logoEnvoi = ref(false)
+
 function surChoixLogo(e) {
-  logoFichier.value = e.target.files[0] || null
+  const f = e.target.files[0] || null
+  logoFichier.value = f
+  logoApercu.value = f ? URL.createObjectURL(f) : ''
 }
 
 async function envoyerLogo() {
   if (!logoFichier.value) return
   logoEnvoi.value = true
-  logoErreur.value = ''
   try {
     const formData = new FormData()
     formData.append('logo', logoFichier.value)
@@ -114,12 +140,83 @@ async function envoyerLogo() {
     })
     parametres.value = data
     logoFichier.value = null
+    logoApercu.value = ''
+    toasts.succes('Logo mis a jour')
   } catch (err) {
-    logoErreur.value = err.response?.data?.message || 'Erreur lors de l\'envoi du logo'
+    toasts.erreur(err.response?.data?.message || 'Erreur lors de l\'envoi du logo')
   } finally {
     logoEnvoi.value = false
   }
 }
+
+/* --- Mot de passe ------------------------------------------------------- */
+
+const motDePasseVisible = ref(false)
+const motDePasseForm = reactive({ actuel: '', nouveau: '', confirmation: '' })
+const motDePasseErreur = ref('')
+const motDePasseSoumission = ref(false)
+
+// Indicateur de robustesse purement indicatif : la regle qui fait autorite est
+// celle du serveur (8 caracteres minimum).
+const forceMotDePasse = computed(() => {
+  const v = motDePasseForm.nouveau
+  if (!v) return null
+  let score = 0
+  if (v.length >= 8) score += 1
+  if (v.length >= 12) score += 1
+  if (/[A-Z]/.test(v) && /[a-z]/.test(v)) score += 1
+  if (/[0-9]/.test(v)) score += 1
+  if (/[^A-Za-z0-9]/.test(v)) score += 1
+  if (score <= 2) return { niveau: 'Faible', part: 33, ton: 'danger' }
+  if (score <= 3) return { niveau: 'Moyen', part: 66, ton: 'warning' }
+  return { niveau: 'Solide', part: 100, ton: 'success' }
+})
+
+const concordance = computed(() => {
+  if (!motDePasseForm.confirmation) return null
+  return motDePasseForm.nouveau === motDePasseForm.confirmation
+})
+
+function ouvrirMotDePasse() {
+  Object.assign(motDePasseForm, { actuel: '', nouveau: '', confirmation: '' })
+  motDePasseErreur.value = ''
+  motDePasseVisible.value = true
+}
+
+async function changerMotDePasse() {
+  if (motDePasseForm.nouveau !== motDePasseForm.confirmation) {
+    motDePasseErreur.value = 'Les deux nouveaux mots de passe ne correspondent pas.'
+    return
+  }
+  motDePasseSoumission.value = true
+  motDePasseErreur.value = ''
+  try {
+    const { data } = await api.patch('/utilisateurs/moi/mot-de-passe', {
+      mot_de_passe_actuel: motDePasseForm.actuel,
+      nouveau_mot_de_passe: motDePasseForm.nouveau,
+    })
+    // Jeton renouvele sur place : la session continue, aucun retour a l'ecran
+    // de connexion et rien a ressaisir.
+    auth.setSession(data.token, data.user)
+    motDePasseVisible.value = false
+    toasts.succes('Mot de passe modifie. Votre session reste ouverte.')
+  } catch (err) {
+    motDePasseErreur.value = err.response?.data?.message || 'Erreur lors du changement de mot de passe'
+  } finally {
+    motDePasseSoumission.value = false
+  }
+}
+
+/* --- Comptes ------------------------------------------------------------ */
+
+const compteVisible = ref(false)
+const compteForm = reactive({ prenom: '', nom: '' })
+const compteErreur = ref('')
+const compteSoumission = ref(false)
+// Identifiant + mot de passe generes, montres UNE SEULE FOIS apres creation.
+// Le mot de passe n'est stocke qu'en hash cote serveur : une fois cet encart
+// ferme, il est definitivement irrecuperable.
+const compteCree = ref(null)
 
 function ouvrirCompte() {
   Object.assign(compteForm, { prenom: '', nom: '' })
@@ -146,251 +243,494 @@ async function creerCompte() {
   }
 }
 
-// Fermer l'encart efface le mot de passe de la memoire du navigateur. Il n'est
-// affiche qu'ici, une seule fois, et n'est plus jamais recuperable ensuite.
 function fermerCompte() {
   compteCree.value = null
   compteVisible.value = false
 }
 
-function ouvrirMotDePasse() {
-  Object.assign(motDePasseForm, { actuel: '', nouveau: '', confirmation: '' })
-  motDePasseErreur.value = ''
-  motDePasseVisible.value = true
-}
+const aDesactiver = ref(null)
+const desactivationEnCours = ref(false)
 
-async function changerMotDePasse() {
-  if (motDePasseForm.nouveau !== motDePasseForm.confirmation) {
-    motDePasseErreur.value = 'Les deux nouveaux mots de passe ne correspondent pas.'
-    return
-  }
-  motDePasseSoumission.value = true
-  motDePasseErreur.value = ''
+async function confirmerDesactivation() {
+  desactivationEnCours.value = true
   try {
-    const { data } = await api.patch('/utilisateurs/moi/mot-de-passe', {
-      mot_de_passe_actuel: motDePasseForm.actuel,
-      nouveau_mot_de_passe: motDePasseForm.nouveau,
-    })
-    // Jeton renouvele sur place : la session continue, aucun retour a l'ecran
-    // de connexion et rien a ressaisir.
-    auth.setSession(data.token, data.user)
-    motDePasseVisible.value = false
-    motDePasseMessage.value = 'Mot de passe modifie. Votre session reste ouverte.'
-  } catch (err) {
-    motDePasseErreur.value = err.response?.data?.message || 'Erreur lors du changement de mot de passe'
-  } finally {
-    motDePasseSoumission.value = false
-  }
-}
-
-async function desactiverCompte(u) {
-  if (!confirm(`Desactiver le compte de ${u.nom} ?`)) return
-  try {
-    await api.patch(`/utilisateurs/${u.id}/desactiver`)
+    await api.patch(`/utilisateurs/${aDesactiver.value.id}/desactiver`)
+    toasts.succes(`Compte de ${aDesactiver.value.prenom} ${aDesactiver.value.nom} desactive`)
+    aDesactiver.value = null
     await charger()
   } catch (err) {
-    erreur.value = err.response?.data?.message || 'Erreur'
+    toasts.erreur(err.response?.data?.message || 'Erreur')
+  } finally {
+    desactivationEnCours.value = false
+  }
+}
+
+async function copier(texte, libelle) {
+  try {
+    await navigator.clipboard.writeText(texte)
+    toasts.succes(`${libelle} copie`)
+  } catch {
+    toasts.erreur('Copie impossible sur ce navigateur')
   }
 }
 </script>
 
 <template>
   <div>
-    <div class="page-header">
-      <h1>Parametres</h1>
+    <PageHeader title="Parametres" subtitle="Configuration de la boutique, des modules actifs et des comptes administrateurs." />
+
+    <p v-if="erreur" class="alert alert-danger mb-4">
+      <Icon name="alert" :size="16" /><span>{{ erreur }}</span>
+    </p>
+
+    <div v-if="loading" class="card">
+      <div class="card-body stack">
+        <div class="skeleton" style="width: 30%; height: 18px" />
+        <div class="skeleton" style="width: 80%" />
+        <div class="skeleton" style="width: 65%" />
+      </div>
     </div>
 
-    <p v-if="erreur" class="error-message">{{ erreur }}</p>
-    <p v-if="loading">Chargement...</p>
+    <template v-else-if="parametres">
+      <Tabs v-model="ongletActif" :tabs="onglets" />
 
-    <template v-else>
-      <div class="card">
-        <h2>Modules actifs</h2>
-        <p style="font-size: 13px; opacity: 0.75; margin-bottom: 12px">
-          Adaptez le systeme a votre usage reel. Un module desactive disparait entierement de
-          l'interface (menu, pages, rapports) et ses routes sont bloquees meme en acces direct —
-          rien n'est jamais supprime, tout revient tel quel des la reactivation.
-        </p>
-        <div class="module-toggle-list">
-          <label class="module-toggle">
-            <input
-              type="checkbox"
-              :checked="parametres.module_ventes"
-              :disabled="moduleEnCours === 'module_ventes'"
-              @change="basculerModule('module_ventes', $event.target.checked)"
-            />
-            <div>
-              <div style="font-weight: 600">Ventes</div>
-              <div style="font-size: 12px; opacity: 0.7">Enregistrement des ventes, attribution aux vendeuses, mini-rapports</div>
+      <!-- ============ General ============ -->
+      <div v-show="ongletActif === 'general'" class="stack">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h2>Logo de la boutique</h2>
+              <p class="card-head-sub">Affiche en en-tete des documents et des rapports imprimes</p>
             </div>
-          </label>
-          <label class="module-toggle">
-            <input
-              type="checkbox"
-              :checked="parametres.module_fournisseurs"
-              :disabled="moduleEnCours === 'module_fournisseurs'"
-              @change="basculerModule('module_fournisseurs', $event.target.checked)"
-            />
-            <div>
-              <div style="font-weight: 600">Fournisseurs</div>
-              <div style="font-size: 12px; opacity: 0.7">Fiches fournisseurs, historique et totaux des achats</div>
-            </div>
-          </label>
-          <label class="module-toggle">
-            <input
-              type="checkbox"
-              :checked="parametres.module_depenses"
-              :disabled="moduleEnCours === 'module_depenses'"
-              @change="basculerModule('module_depenses', $event.target.checked)"
-            />
-            <div>
-              <div style="font-weight: 600">Depenses</div>
-              <div style="font-size: 12px; opacity: 0.7">Suivi des depenses courantes, integrees au bilan net</div>
-            </div>
-          </label>
-        </div>
-        <p style="font-size: 12px; opacity: 0.6; margin-top: 8px">
-          Produits, Stock, Rapports, Historique et Parametres restent toujours actifs (fondations du systeme).
-        </p>
-      </div>
-
-      <div class="card">
-        <h2>Logo de la boutique</h2>
-        <p style="font-size: 13px; opacity: 0.75; margin-bottom: 12px">
-          Reutilise en en-tete de tous les documents generes (rapports, exports).
-        </p>
-        <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px">
-          <img :src="assetUrl(parametres.logo_path)" alt="Logo" style="width: 72px; height: 72px; border-radius: 12px; border: 1px solid var(--border); object-fit: cover" />
-          <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" @change="surChoixLogo" />
-          <button type="button" class="primary" :disabled="!logoFichier || logoEnvoi" @click="envoyerLogo">
-            {{ logoEnvoi ? 'Envoi...' : 'Changer le logo' }}
-          </button>
-        </div>
-        <p v-if="logoErreur" class="error-message">{{ logoErreur }}</p>
-      </div>
-
-      <div class="card">
-        <h2>Valorisation du stock</h2>
-        <p style="font-size: 13px; opacity: 0.75; margin-bottom: 12px">
-          Configurable une seule fois pour tout le systeme.
-        </p>
-        <div class="form-row-inline">
-          <div class="form-row">
-            <label>Methode</label>
-            <select v-model="parametres.methode_valorisation">
-              <option value="CMP">CMP (cout moyen pondere)</option>
-              <option value="FIFO">FIFO (premier entre, premier sorti)</option>
-            </select>
           </div>
-          <div class="form-row" style="justify-content: flex-end">
-            <label>&nbsp;</label>
-            <button type="button" class="primary" :disabled="methodeSoumission" @click="changerMethode">
-              {{ methodeSoumission ? 'Enregistrement...' : 'Enregistrer' }}
+          <div class="card-body">
+            <div class="row wrap" style="gap: 16px; align-items: flex-start">
+              <img
+                :src="logoApercu || assetUrl(parametres.logo_path)"
+                class="thumb thumb-lg"
+                alt="Logo actuel"
+              />
+              <div class="field flex-1" style="min-width: 220px">
+                <label>Remplacer le logo</label>
+                <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" @change="surChoixLogo" />
+                <span class="field-hint">PNG, JPG, WebP ou SVG — 5 Mo maximum</span>
+              </div>
+              <button
+                type="button"
+                class="primary"
+                :disabled="!logoFichier || logoEnvoi"
+                @click="envoyerLogo"
+              >
+                <span v-if="logoEnvoi" class="spinner" />
+                Enregistrer
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h2>Valorisation du stock</h2>
+              <p class="card-head-sub">Determine le cout d'acquisition applique a chaque vente</p>
+            </div>
+          </div>
+          <div class="card-body stack">
+            <label
+              class="switch-row"
+              :class="{ 'is-on': parametres.methode_valorisation === 'CMP' }"
+              @click.prevent="changerMethode('CMP')"
+            >
+              <input type="radio" :checked="parametres.methode_valorisation === 'CMP'" :disabled="methodeSoumission" />
+              <span class="switch-text">
+                <span class="switch-title">Cout moyen pondere (CMP)</span>
+                <span class="switch-desc">
+                  Toutes les entrees d'un produit sont moyennees. Simple a suivre, lisse les variations de prix d'achat.
+                </span>
+              </span>
+            </label>
+            <label
+              class="switch-row"
+              :class="{ 'is-on': parametres.methode_valorisation === 'FIFO' }"
+              @click.prevent="changerMethode('FIFO')"
+            >
+              <input type="radio" :checked="parametres.methode_valorisation === 'FIFO'" :disabled="methodeSoumission" />
+              <span class="switch-text">
+                <span class="switch-title">Premier entre, premier sorti (FIFO)</span>
+                <span class="switch-desc">
+                  Chaque vente consomme les lots les plus anciens a leur cout reel. Plus fidele quand les prix bougent.
+                </span>
+              </span>
+            </label>
+            <p class="alert alert-info">
+              <Icon name="info" :size="16" />
+              <span>
+                Les ventes deja enregistrees gardent le cout fige au moment ou elles ont eu lieu.
+                Changer de methode n'affecte que les ventes a venir.
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h2>Apparence</h2>
+              <p class="card-head-sub">Preference enregistree sur cet appareil uniquement</p>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="row-between wrap">
+              <div>
+                <p class="strong">Theme {{ theme.theme === 'dark' ? 'sombre' : 'clair' }}</p>
+                <p class="small muted mt-2">Le theme suit votre systeme tant que vous ne choisissez pas.</p>
+              </div>
+              <button type="button" @click="theme.basculer()">
+                <Icon :name="theme.theme === 'dark' ? 'sun' : 'moon'" :size="15" />
+                Passer en {{ theme.theme === 'dark' ? 'clair' : 'sombre' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Modules ============ -->
+      <div v-show="ongletActif === 'modules'" class="card">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h2>Modules actifs</h2>
+            <p class="card-head-sub">
+              Un module desactive disparait entierement de l'interface et ses routes sont bloquees,
+              meme en acces direct. Rien n'est supprime : tout revient tel quel a la reactivation.
+            </p>
+          </div>
+        </div>
+        <div class="card-body stack">
+          <div
+            v-for="(info, champ) in DESCRIPTION_MODULE"
+            :key="champ"
+            class="switch-row"
+            :class="{ 'is-on': parametres[champ] }"
+            @click="basculerModule(champ)"
+          >
+            <span class="switch-text">
+              <span class="switch-title">{{ info.titre }}</span>
+              <span class="switch-desc">{{ info.desc }}</span>
+            </span>
+            <button
+              type="button"
+              class="switch"
+              :class="{ 'is-on': parametres[champ] }"
+              :disabled="moduleEnCours === champ"
+              :aria-label="`Basculer ${info.titre}`"
+              @click.stop="basculerModule(champ)"
+            />
+          </div>
+
+          <p class="alert alert-info">
+            <Icon name="info" :size="16" />
+            <span>
+              Produits, Stock, Rapports, Historique et Parametres sont les fondations du systeme :
+              ils restent toujours actifs.
+            </span>
+          </p>
+        </div>
+      </div>
+
+      <!-- ============ Securite ============ -->
+      <div v-show="ongletActif === 'securite'" class="stack">
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h2>Mon mot de passe</h2>
+              <p class="card-head-sub">Connecte en tant que {{ auth.user?.nom_utilisateur }}</p>
+            </div>
+            <button type="button" class="primary" @click="ouvrirMotDePasse">
+              <Icon name="key" :size="15" /> Changer
             </button>
           </div>
+          <div class="card-body">
+            <p class="alert alert-warning">
+              <Icon name="warning" :size="16" />
+              <span>
+                Le compte livre a l'installation utilise un mot de passe par defaut, identique sur
+                toutes les installations et connu de quiconque a acces au code. Changez-le des la
+                premiere connexion.
+              </span>
+            </p>
+          </div>
         </div>
-        <p v-if="methodeMessage">{{ methodeMessage }}</p>
+
+        <div class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h2>Sessions</h2>
+              <p class="card-head-sub">Comment les acces sont revoques</p>
+            </div>
+          </div>
+          <div class="card-body stack">
+            <div class="row" style="align-items: flex-start; gap: 12px">
+              <span class="stat-icon is-success"><Icon name="shield" :size="15" /></span>
+              <div class="flex-1">
+                <p class="strong">Changer de mot de passe ferme les autres sessions</p>
+                <p class="small muted mt-2">
+                  Toute session ouverte ailleurs (autre poste, autre navigateur) est immediatement
+                  invalidee. La session courante, elle, reste ouverte.
+                </p>
+              </div>
+            </div>
+            <div class="row" style="align-items: flex-start; gap: 12px">
+              <span class="stat-icon is-success"><Icon name="shield" :size="15" /></span>
+              <div class="flex-1">
+                <p class="strong">Un compte desactive perd l'acces immediatement</p>
+                <p class="small muted mt-2">
+                  L'etat du compte est revalide a chaque requete, sans attendre l'expiration du jeton.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="card">
-        <div class="page-header">
-          <h2>Mon mot de passe</h2>
-          <button type="button" class="primary" @click="ouvrirMotDePasse">Changer</button>
+      <!-- ============ Comptes ============ -->
+      <div v-show="ongletActif === 'comptes'" class="card">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h2>Comptes administrateurs</h2>
+            <p class="card-head-sub">
+              Seuls les administrateurs se connectent. Les vendeuses sont identifiees par leur code a
+              6 chiffres, sans compte.
+            </p>
+          </div>
+          <button type="button" class="primary" @click="ouvrirCompte">
+            <Icon name="userPlus" :size="15" /> Nouveau compte
+          </button>
         </div>
-        <p style="font-size: 13px; opacity: 0.75">
-          Le compte livre a l'installation utilise un mot de passe par defaut, identique sur
-          toutes les installations. Changez-le des la premiere connexion.
-        </p>
-        <p v-if="motDePasseMessage">{{ motDePasseMessage }}</p>
-      </div>
 
-      <div class="card">
-        <div class="page-header">
-          <h2>Comptes administrateurs</h2>
-          <button type="button" class="primary" @click="ouvrirCompte">+ Nouveau compte</button>
+        <div class="card-body card-body-flush">
+          <EmptyState v-if="!utilisateurs.length" icon="users" title="Aucun compte" desc="Aucun compte administrateur n'existe." />
+          <div v-else class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Personne</th>
+                  <th>Identifiant</th>
+                  <th>Statut</th>
+                  <th class="td-num">Cree le</th>
+                  <th class="td-actions"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="u in utilisateurs" :key="u.id">
+                  <td>
+                    <div class="row" style="gap: 9px">
+                      <span class="avatar">{{ ((u.prenom || '')[0] || '') + ((u.nom || '')[0] || '') }}</span>
+                      <span>
+                        <span class="td-strong">{{ u.prenom }} {{ u.nom }}</span>
+                        <span v-if="u.id === auth.user?.id" class="badge accent" style="margin-left: 6px">Vous</span>
+                      </span>
+                    </div>
+                  </td>
+                  <td><code class="strong">{{ u.nom_utilisateur }}</code></td>
+                  <td>
+                    <span class="badge" :class="u.actif ? 'success' : 'danger'">
+                      <span class="badge-dot" />{{ u.actif ? 'Actif' : 'Desactive' }}
+                    </span>
+                  </td>
+                  <td class="td-num small muted nowrap">{{ formatDateCourt(u.created_at) }}</td>
+                  <td class="td-actions">
+                    <button
+                      v-if="u.actif && u.id !== auth.user?.id"
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      title="Desactiver"
+                      style="color: var(--danger)"
+                      @click="aDesactiver = u"
+                    >
+                      <Icon name="trash" :size="15" />
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
-        <p style="font-size: 13px; opacity: 0.75; margin-bottom: 12px">
-          Seuls les administrateurs ont un compte de connexion. Les vendeuses sont gerees
-          dans le module Vendeuses, identifiees par leur code a 6 chiffres.
-        </p>
-        <table>
-          <thead><tr><th>Personne</th><th>Identifiant</th><th>Statut</th><th>Actions</th></tr></thead>
-          <tbody>
-            <tr v-for="u in utilisateurs" :key="u.id">
-              <td>{{ u.prenom }} {{ u.nom }}</td>
-              <td><code>{{ u.nom_utilisateur }}</code></td>
-              <td><span class="badge" :class="u.actif ? 'success' : 'danger'">{{ u.actif ? 'Actif' : 'Inactif' }}</span></td>
-              <td>
-                <button type="button" class="danger" v-if="u.actif" @click="desactiverCompte(u)">Desactiver</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
       </div>
     </template>
 
+    <!-- ============ Modale mot de passe ============ -->
     <Modal v-if="motDePasseVisible" title="Changer mon mot de passe" @close="motDePasseVisible = false">
-      <form @submit.prevent="changerMotDePasse">
-        <div class="form-row">
+      <form id="form-mdp" @submit.prevent="changerMotDePasse">
+        <div class="field">
           <label>Mot de passe actuel</label>
           <input v-model="motDePasseForm.actuel" type="password" required autocomplete="current-password" />
         </div>
-        <div class="form-row">
+        <div class="field">
           <label>Nouveau mot de passe</label>
           <input v-model="motDePasseForm.nouveau" type="password" required minlength="8" autocomplete="new-password" />
+          <div v-if="forceMotDePasse" class="row mt-2" style="gap: 9px">
+            <div class="jauge">
+              <div
+                class="jauge-remplissage"
+                :style="{
+                  width: `${forceMotDePasse.part}%`,
+                  background: `var(--${forceMotDePasse.ton})`,
+                }"
+              />
+            </div>
+            <span class="small" :style="{ color: `var(--${forceMotDePasse.ton})` }">{{ forceMotDePasse.niveau }}</span>
+          </div>
+          <span v-else class="field-hint">8 caracteres minimum</span>
         </div>
-        <div class="form-row">
-          <label>Confirmer</label>
+        <div class="field">
+          <label>Confirmer le nouveau mot de passe</label>
           <input v-model="motDePasseForm.confirmation" type="password" required minlength="8" autocomplete="new-password" />
+          <span v-if="concordance === false" class="field-error">Les deux mots de passe ne correspondent pas</span>
+          <span v-else-if="concordance === true" class="field-hint" style="color: var(--success)">Les mots de passe correspondent</span>
         </div>
-        <p style="font-size: 12px; opacity: 0.7">8 caracteres minimum. Vous resterez connecte.</p>
-        <p v-if="motDePasseErreur" class="error-message">{{ motDePasseErreur }}</p>
-        <button type="submit" class="primary" :disabled="motDePasseSoumission">
-          {{ motDePasseSoumission ? 'Modification...' : 'Changer le mot de passe' }}
-        </button>
+        <p class="alert alert-info">
+          <Icon name="info" :size="16" />
+          <span>Vous resterez connecte. Les sessions ouvertes ailleurs seront fermees.</span>
+        </p>
+        <p v-if="motDePasseErreur" class="alert alert-danger">
+          <Icon name="alert" :size="16" /><span>{{ motDePasseErreur }}</span>
+        </p>
       </form>
+      <template #footer>
+        <button type="button" @click="motDePasseVisible = false">Annuler</button>
+        <button type="submit" form="form-mdp" class="primary" :disabled="motDePasseSoumission">
+          <span v-if="motDePasseSoumission" class="spinner" />
+          Changer le mot de passe
+        </button>
+      </template>
     </Modal>
 
+    <!-- ============ Modale nouveau compte ============ -->
     <Modal v-if="compteVisible" title="Nouveau compte administrateur" @close="fermerCompte">
-      <form v-if="!compteCree" @submit.prevent="creerCompte">
-        <div class="form-row">
-          <label>Prenom</label>
-          <input v-model="compteForm.prenom" required />
+      <form v-if="!compteCree" id="form-compte" @submit.prevent="creerCompte">
+        <div class="field-row">
+          <div class="field">
+            <label>Prenom</label>
+            <input v-model="compteForm.prenom" required />
+          </div>
+          <div class="field">
+            <label>Nom</label>
+            <input v-model="compteForm.nom" required />
+          </div>
         </div>
-        <div class="form-row">
-          <label>Nom</label>
-          <input v-model="compteForm.nom" required />
-        </div>
-        <p style="font-size: 12px; opacity: 0.7">
-          L'identifiant de connexion et le mot de passe sont generes automatiquement
-          et affiches une seule fois a la creation.
+        <p class="alert alert-info">
+          <Icon name="info" :size="16" />
+          <span>
+            L'identifiant de connexion et le mot de passe sont generes automatiquement et affiches
+            une seule fois a la creation.
+          </span>
         </p>
-        <p v-if="compteErreur" class="error-message">{{ compteErreur }}</p>
-        <button type="submit" class="primary" :disabled="compteSoumission">
-          {{ compteSoumission ? 'Creation...' : 'Creer le compte' }}
-        </button>
+        <p v-if="compteErreur" class="alert alert-danger">
+          <Icon name="alert" :size="16" /><span>{{ compteErreur }}</span>
+        </p>
       </form>
 
-      <div v-else>
-        <p style="margin-bottom: 12px">
-          Compte cree pour <strong>{{ compteCree.personne }}</strong>.
-          Notez ces identifiants et transmettez-les : <strong>ils ne seront plus jamais affiches</strong>.
+      <div v-else class="stack">
+        <p>
+          Compte cree pour <strong>{{ compteCree.personne }}</strong>. Notez ces identifiants et
+          transmettez-les : <strong>ils ne seront plus jamais affiches</strong>.
         </p>
-        <div class="form-row">
-          <label>Identifiant</label>
-          <input :value="compteCree.nom_utilisateur" readonly onclick="this.select()" />
+
+        <div class="identifiants">
+          <div class="identifiant-ligne">
+            <span class="small muted">Identifiant</span>
+            <div class="row" style="gap: 8px">
+              <code class="identifiant-valeur">{{ compteCree.nom_utilisateur }}</code>
+              <button type="button" class="btn-sm btn-ghost" title="Copier" @click="copier(compteCree.nom_utilisateur, 'Identifiant')">
+                <Icon name="copy" :size="15" />
+              </button>
+            </div>
+          </div>
+          <div class="identifiant-ligne">
+            <span class="small muted">Mot de passe</span>
+            <div class="row" style="gap: 8px">
+              <code class="identifiant-valeur">{{ compteCree.mot_de_passe }}</code>
+              <button type="button" class="btn-sm btn-ghost" title="Copier" @click="copier(compteCree.mot_de_passe, 'Mot de passe')">
+                <Icon name="copy" :size="15" />
+              </button>
+            </div>
+          </div>
         </div>
-        <div class="form-row">
-          <label>Mot de passe</label>
-          <input :value="compteCree.mot_de_passe" readonly onclick="this.select()" />
-        </div>
-        <p style="font-size: 12px; opacity: 0.7">
-          Le mot de passe n'est enregistre que sous forme chiffree : il est
-          irrecuperable une fois cette fenetre fermee. La personne pourra le
-          changer elle-meme depuis Parametres.
+
+        <p class="alert alert-warning">
+          <Icon name="warning" :size="16" />
+          <span>
+            Le mot de passe n'est enregistre que sous forme chiffree : il est irrecuperable une fois
+            cette fenetre fermee. La personne pourra le changer elle-meme depuis Parametres.
+          </span>
         </p>
-        <button type="button" class="primary" @click="fermerCompte">J'ai note ces identifiants</button>
       </div>
+
+      <template #footer>
+        <template v-if="!compteCree">
+          <button type="button" @click="fermerCompte">Annuler</button>
+          <button type="submit" form="form-compte" class="primary" :disabled="compteSoumission">
+            <span v-if="compteSoumission" class="spinner" />
+            Creer le compte
+          </button>
+        </template>
+        <button v-else type="button" class="primary" @click="fermerCompte">J'ai note ces identifiants</button>
+      </template>
     </Modal>
+
+    <ConfirmDialog
+      v-if="moduleADesactiver"
+      :title="`Desactiver ${DESCRIPTION_MODULE[moduleADesactiver].titre} ?`"
+      message="Toutes les pages, menus et donnees lies a ce module disparaitront immediatement de l'interface. Rien n'est supprime en base : tout reapparait tel quel si vous le reactivez."
+      confirm-label="Desactiver"
+      :busy="moduleEnCours === moduleADesactiver"
+      @confirm="appliquerModule(moduleADesactiver, false)"
+      @cancel="moduleADesactiver = null"
+    />
+
+    <ConfirmDialog
+      v-if="aDesactiver"
+      title="Desactiver ce compte ?"
+      :message="`${aDesactiver.prenom} ${aDesactiver.nom} ne pourra plus se connecter, et ses sessions ouvertes seront fermees immediatement.`"
+      confirm-label="Desactiver"
+      :busy="desactivationEnCours"
+      @confirm="confirmerDesactivation"
+      @cancel="aDesactiver = null"
+    />
   </div>
 </template>
+
+<style scoped>
+.jauge {
+  flex: 1;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.jauge-remplissage {
+  height: 100%;
+  border-radius: var(--r-full);
+  transition: width 160ms ease;
+}
+
+.identifiants {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.identifiant-ligne {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.identifiant-ligne + .identifiant-ligne { border-top: 1px dashed var(--border); }
+.identifiant-valeur {
+  font-size: 17px;
+  font-weight: 650;
+  color: var(--text-h);
+  letter-spacing: 0.02em;
+}
+</style>

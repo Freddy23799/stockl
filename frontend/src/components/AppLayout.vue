@@ -1,50 +1,165 @@
 <script setup>
-import { useRouter } from 'vue-router'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useModulesStore } from '../stores/modules'
+import { useThemeStore } from '../stores/theme'
+import api from '../api/client'
+import Icon from './ui/Icon.vue'
 import logo from '../assets/branding/logo-machibel.png'
 
 const auth = useAuthStore()
 const modules = useModulesStore()
+const theme = useThemeStore()
 const router = useRouter()
+const route = useRoute()
 
-function logout() {
+const menuOuvert = ref(false)
+
+// Pastille de stock bas dans la navigation : l'alerte doit se voir depuis
+// n'importe quelle page, pas seulement en ouvrant Stock.
+const alertes = ref(0)
+
+async function chargerAlertes() {
+  try {
+    const { data } = await api.get('/stock/alertes')
+    alertes.value = data.length
+  } catch {
+    alertes.value = 0
+  }
+}
+
+// Navigation groupee par intention plutot qu'une liste plate : on cherche
+// "ou j'enregistre une vente" ou "ou je consulte mes chiffres", pas un item
+// precis dans une liste de dix.
+const sections = computed(() => [
+  {
+    titre: 'Pilotage',
+    items: [
+      { to: '/', label: 'Tableau de bord', icon: 'dashboard' },
+      { to: '/rapports', label: 'Rapports', icon: 'chart' },
+    ],
+  },
+  {
+    titre: 'Activite',
+    items: [
+      ...(modules.ventes ? [{ to: '/ventes', label: 'Ventes', icon: 'cart' }] : []),
+      ...(modules.depenses ? [{ to: '/depenses', label: 'Depenses', icon: 'receipt' }] : []),
+    ],
+  },
+  {
+    titre: 'Catalogue & stock',
+    items: [
+      { to: '/produits', label: 'Produits', icon: 'package' },
+      { to: '/stock', label: 'Stock', icon: 'layers', badge: alertes.value || null },
+      ...(modules.fournisseurs ? [{ to: '/fournisseurs', label: 'Fournisseurs', icon: 'truck' }] : []),
+    ],
+  },
+  {
+    titre: 'Administration',
+    items: [
+      ...(modules.ventes ? [{ to: '/vendeuses', label: 'Vendeuses', icon: 'users' }] : []),
+      { to: '/historique', label: 'Historique', icon: 'history' },
+      { to: '/parametres', label: 'Parametres', icon: 'settings' },
+    ],
+  },
+].filter((s) => s.items.length))
+
+const titreCourant = computed(() => {
+  for (const s of sections.value) {
+    const item = s.items.find((i) => i.to === route.path)
+    if (item) return item.label
+  }
+  return ''
+})
+
+const initiales = computed(() => {
+  const u = auth.user
+  if (!u) return '?'
+  const p = (u.prenom || '').trim()
+  const n = (u.nom || '').trim()
+  if (p && n) return (p[0] + n[0])
+  return (u.nom_utilisateur || '?').slice(0, 2)
+})
+
+const nomComplet = computed(() => {
+  const u = auth.user
+  if (!u) return ''
+  return [u.prenom, u.nom].filter(Boolean).join(' ') || u.nom_utilisateur
+})
+
+function deconnexion() {
   auth.logout()
   modules.reinitialiser()
   router.push({ name: 'login' })
 }
+
+// Le menu mobile se referme des qu'on change de page, sinon il masque la page
+// qu'on vient d'ouvrir.
+watch(() => route.path, () => { menuOuvert.value = false })
+
+onMounted(chargerAlertes)
+watch(() => route.path, (p) => { if (p === '/stock' || p === '/produits') chargerAlertes() })
 </script>
 
 <template>
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <img :src="logo" alt="MACHIBEL" />
-        <span>MACHIBEL</span>
+    <aside class="sidebar" :class="{ 'is-open': menuOuvert }">
+      <div class="sidebar-brand">
+        <img :src="logo" alt="" />
+        <span class="sidebar-brand-text">
+          <span class="sidebar-brand-name">MACHIBEL</span>
+          <span class="sidebar-brand-sub">Gestion parfumerie</span>
+        </span>
       </div>
 
-      <nav>
-        <router-link to="/">Tableau de bord</router-link>
-        <router-link to="/produits">Produits</router-link>
-        <router-link v-if="modules.ventes" to="/vendeuses">Vendeuses</router-link>
-        <router-link v-if="modules.ventes" to="/ventes">Ventes</router-link>
-        <router-link to="/stock">Stock</router-link>
-        <router-link v-if="modules.fournisseurs" to="/fournisseurs">Fournisseurs</router-link>
-        <router-link v-if="modules.depenses" to="/depenses">Dépenses</router-link>
-        <router-link to="/rapports">Rapports</router-link>
-        <router-link to="/historique">Historique</router-link>
-        <router-link to="/parametres">Paramètres</router-link>
+      <nav class="sidebar-nav">
+        <template v-for="s in sections" :key="s.titre">
+          <div class="nav-section">{{ s.titre }}</div>
+          <router-link v-for="i in s.items" :key="i.to" :to="i.to" class="nav-link">
+            <Icon :name="i.icon" :size="17" />
+            {{ i.label }}
+            <span v-if="i.badge" class="nav-link-badge">{{ i.badge }}</span>
+          </router-link>
+        </template>
       </nav>
 
-      <div class="user-box">
-        <div>{{ auth.user?.nom }}</div>
-        <div style="opacity: 0.7">Administrateur</div>
-        <button type="button" @click="logout">Deconnexion</button>
+      <div class="sidebar-footer">
+        <div class="user-chip" style="cursor: default">
+          <span class="avatar">{{ initiales }}</span>
+          <span class="user-chip-info">
+            <span class="user-chip-name">{{ nomComplet }}</span>
+            <span class="user-chip-role">Administrateur</span>
+          </span>
+          <button type="button" class="icon-btn" title="Se deconnecter" @click="deconnexion">
+            <Icon name="logout" :size="16" />
+          </button>
+        </div>
       </div>
     </aside>
 
-    <main class="main-content">
-      <slot />
-    </main>
+    <div v-if="menuOuvert" class="scrim" @click="menuOuvert = false" />
+
+    <div class="app-main">
+      <header class="topbar">
+        <button type="button" class="icon-btn burger" aria-label="Menu" @click="menuOuvert = !menuOuvert">
+          <Icon name="menu" :size="19" />
+        </button>
+        <span class="topbar-title">{{ titreCourant }}</span>
+        <div class="topbar-spacer" />
+        <button
+          type="button"
+          class="icon-btn"
+          :title="theme.theme === 'dark' ? 'Passer en clair' : 'Passer en sombre'"
+          @click="theme.basculer()"
+        >
+          <Icon :name="theme.theme === 'dark' ? 'sun' : 'moon'" :size="17" />
+        </button>
+      </header>
+
+      <main class="page">
+        <slot />
+      </main>
+    </div>
   </div>
 </template>

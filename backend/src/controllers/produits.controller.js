@@ -1,5 +1,7 @@
+const fs = require('fs');
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
+const { finaliserFichier, nettoyerAnciennesVersions } = require('../middleware/upload.middleware');
 
 async function list(req, res) {
   const includeInactifs = req.query.includeInactifs === 'true';
@@ -167,12 +169,24 @@ async function historiquePrix(req, res) {
 async function uploadPhoto(req, res) {
   if (!req.file) return res.status(400).json({ message: 'Aucun fichier recu' });
 
-  const relativePath = `uploads/produits/${req.file.filename}`;
+  const { id } = req.params;
+
+  // On verifie que le produit existe AVANT de poser le fichier definitif :
+  // sinon une photo envoyee sur un identifiant inexistant resterait sur le
+  // disque sans qu'aucune fiche ne la reference.
+  const { rows: existe } = await pool.query('SELECT 1 FROM produits WHERE id = $1', [id]);
+  if (existe.length === 0) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ message: 'Produit introuvable' });
+  }
+
+  const relativePath = finaliserFichier(req.file, 'produits', String(id));
+  nettoyerAnciennesVersions('produits', String(id), relativePath);
+
   const { rows } = await pool.query(
     'UPDATE produits SET photo = $1, updated_at = now() WHERE id = $2 RETURNING *',
-    [relativePath, req.params.id]
+    [relativePath, id]
   );
-  if (rows.length === 0) return res.status(404).json({ message: 'Produit introuvable' });
   res.json(rows[0]);
 }
 

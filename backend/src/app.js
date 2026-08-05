@@ -7,6 +7,7 @@ const morgan = require('morgan');
 
 const config = require('./config');
 const routes = require('./routes');
+const { gererErreursUpload } = require('./middleware/upload.middleware');
 
 const app = express();
 
@@ -38,6 +39,11 @@ app.use('/uploads', express.static(config.uploadsDir));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.use('/api', routes);
+
+// Traduit les erreurs d'envoi de fichier (taille, format) en reponses lisibles.
+// Doit venir apres les routes, mais avant le gestionnaire d'erreurs generique
+// qui repondrait un 500 "Erreur serveur" sans explication.
+app.use(gererErreursUpload);
 
 // -----------------------------------------------------------------------------
 // PWA servie par ce meme processus : un seul service a deployer, une seule
