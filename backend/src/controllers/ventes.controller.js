@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
 const { sortieStockPourVente, StockInsuffisantError } = require('../services/stock.service');
+const { getPagination } = require('../utils/pagination');
 
 async function list(req, res) {
   const { from, to, vendeuse_id, type } = req.query;
@@ -13,13 +14,16 @@ async function list(req, res) {
   if (type) { params.push(type); conditions.push(`type = $${params.length}`); }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const { page, pageSize, offset } = getPagination(req);
+
+  const { rows: countRows } = await pool.query(`SELECT COUNT(*)::int AS total FROM ventes ${where}`, params);
   const { rows } = await pool.query(
     `SELECT v.*, vd.nom AS vendeuse_nom
      FROM ventes v LEFT JOIN vendeuses vd ON vd.id = v.vendeuse_id
-     ${where} ORDER BY v.date DESC LIMIT 500`,
-    params
+     ${where} ORDER BY v.date DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, pageSize, offset]
   );
-  res.json(rows);
+  res.json({ data: rows, total: countRows[0].total, page, pageSize });
 }
 
 async function getById(req, res) {

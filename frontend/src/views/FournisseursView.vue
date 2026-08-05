@@ -9,6 +9,10 @@ const loading = ref(true)
 const erreur = ref('')
 const includeInactifs = ref(false)
 
+// Filtre de periode pour comparer les achats fournisseurs (optionnel)
+const plage = reactive({ from: '', to: '' })
+const periodeActive = ref(false)
+
 const formVisible = ref(false)
 const modeEdition = ref(false)
 const soumission = ref(false)
@@ -25,13 +29,36 @@ async function charger() {
   loading.value = true
   erreur.value = ''
   try {
-    const { data } = await api.get('/fournisseurs/totaux')
+    const params = {}
+    if (plage.from && plage.to) {
+      params.from = plage.from
+      params.to = plage.to
+    }
+    const { data } = await api.get('/fournisseurs/totaux', { params })
     fournisseurs.value = includeInactifs.value ? data : data.filter((f) => f.actif)
+    periodeActive.value = Boolean(plage.from && plage.to)
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
     loading.value = false
   }
+}
+
+function reinitialiserPeriode() {
+  plage.from = ''
+  plage.to = ''
+  charger()
+}
+
+function classeVariation(v) {
+  if (v > 0) return 'success'
+  if (v < 0) return 'danger'
+  return ''
+}
+
+function texteVariation(v) {
+  const fleche = v > 0 ? '▲' : v < 0 ? '▼' : '-'
+  return `${fleche} ${Math.abs(v).toFixed(1)}%`
 }
 
 onMounted(charger)
@@ -110,13 +137,36 @@ async function ouvrirHistorique(f) {
       </label>
     </div>
 
+    <div class="toolbar">
+      <div class="form-row">
+        <label>Du</label>
+        <input v-model="plage.from" type="date" />
+      </div>
+      <div class="form-row">
+        <label>Au</label>
+        <input v-model="plage.to" type="date" />
+      </div>
+      <div class="form-row" style="justify-content: flex-end">
+        <label>&nbsp;</label>
+        <button type="button" @click="charger">Comparer sur une periode</button>
+      </div>
+      <div class="form-row" v-if="periodeActive" style="justify-content: flex-end">
+        <label>&nbsp;</label>
+        <button type="button" @click="reinitialiserPeriode">Reinitialiser</button>
+      </div>
+    </div>
+
     <p v-if="erreur" class="error-message">{{ erreur }}</p>
     <p v-if="loading">Chargement...</p>
 
     <div class="card" v-else>
       <table>
         <thead>
-          <tr><th>Nom</th><th>Contact</th><th>Achats</th><th>Quantite totale</th><th>Montant total</th><th>Statut</th><th>Actions</th></tr>
+          <tr>
+            <th>Nom</th><th>Contact</th><th>Achats</th><th>Quantite totale</th><th>Montant total</th>
+            <th v-if="periodeActive">Variation vs periode precedente</th>
+            <th>Statut</th><th>Actions</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="f in fournisseurs" :key="f.id">
@@ -125,6 +175,12 @@ async function ouvrirHistorique(f) {
             <td>{{ f.nombre_achats }}</td>
             <td>{{ formatQuantite(f.quantite_totale) }}</td>
             <td>{{ formatMontant(f.montant_total) }}</td>
+            <td v-if="periodeActive">
+              <span v-if="typeof f.variation_pourcentage === 'number'" class="badge" :class="classeVariation(f.variation_pourcentage)">
+                {{ texteVariation(f.variation_pourcentage) }}
+              </span>
+              <span v-else>-</span>
+            </td>
             <td><span class="badge" :class="f.actif ? 'success' : 'danger'">{{ f.actif ? 'Actif' : 'Inactif' }}</span></td>
             <td style="display: flex; gap: 4px; flex-wrap: wrap">
               <button type="button" @click="ouvrirEdition(f)">Modifier</button>
@@ -134,7 +190,7 @@ async function ouvrirHistorique(f) {
               </button>
             </td>
           </tr>
-          <tr v-if="!fournisseurs.length"><td colspan="7">Aucun fournisseur</td></tr>
+          <tr v-if="!fournisseurs.length"><td :colspan="periodeActive ? 8 : 7">Aucun fournisseur</td></tr>
         </tbody>
       </table>
     </div>

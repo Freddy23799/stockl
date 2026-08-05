@@ -6,6 +6,8 @@ const utilisateursController = require('../controllers/utilisateurs.controller')
 // Gestion des comptes : Administrateur uniquement
 router.get('/', requireAuth, requireRole('admin'), utilisateursController.list);
 router.post('/', requireAuth, requireRole('admin'), utilisateursController.create);
+// Son propre mot de passe : pas de requireRole, chacun change le sien.
+router.patch('/moi/mot-de-passe', requireAuth, utilisateursController.changerMotDePasse);
 router.patch('/:id/desactiver', requireAuth, requireRole('admin'), utilisateursController.desactiver);
 
 module.exports = router;

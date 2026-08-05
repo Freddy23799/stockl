@@ -1,11 +1,11 @@
 const { Pool } = require('pg');
+const config = require('./index');
 
-const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT) || 5439,
-  user: process.env.DB_USER || 'machibel',
-  password: process.env.DB_PASSWORD || 'machibel',
-  database: process.env.DB_NAME || 'machibel',
-});
+// config.db contient soit { connectionString, ssl }, soit
+// { host, port, user, database, password } - voir config/index.js.
+// `origine` ne sert qu'au diagnostic, le pool n'en veut pas.
+const { origine, ...optionsConnexion } = config.db;
+
+const pool = new Pool(optionsConnexion);
 
 module.exports = pool;

@@ -1,5 +1,5 @@
 const pool = require('../config/db');
-const { computeResume } = require('../services/rapports.service');
+const { computeResume, computeSerieQuotidienne, computePerformanceProduits } = require('../services/rapports.service');
 
 function startOfToday() {
   const d = new Date();
@@ -104,10 +104,54 @@ async function activiteRecente(req, res) {
   });
 }
 
+// Serie quotidienne (CA + depenses par jour) pour tracer une courbe de tendance
+// sur la periode selectionnee - calcule uniquement a partir des donnees en base.
+async function serie(req, res) {
+  const { from, to, vendeuse_id } = req.query;
+  if (!from || !to) return res.status(400).json({ message: 'from et to sont requis' });
+  const resultat = await computeSerieQuotidienne({ from, to, vendeuseId: vendeuse_id });
+  res.json(resultat);
+}
+
+// Produits les plus/moins vendus sur la periode, avec tendance vs periode
+// precedente de meme duree. Regles locales deterministes (classement +
+// comparaison), aucune IA/appel externe - conforme au fonctionnement hors-ligne.
+async function performanceProduits(req, res) {
+  const { from, to } = req.query;
+  if (!from || !to) return res.status(400).json({ message: 'from et to sont requis' });
+  const limite = Math.min(Number(req.query.limite) || 5, 20);
+  const resultat = await computePerformanceProduits({ from, to, limite });
+  res.json(resultat);
+}
+
+// Comparaison rapide aujourd'hui vs hier, pour le tableau de bord.
+async function comparaisonVeille(req, res) {
+  const debutAujourdhui = startOfToday();
+  const debutHier = new Date(debutAujourdhui);
+  debutHier.setDate(debutHier.getDate() - 1);
+
+  const [aujourdhui, hier] = await Promise.all([
+    computeResume({ from: debutAujourdhui, to: new Date().toISOString() }),
+    computeResume({ from: debutHier.toISOString(), to: debutAujourdhui }),
+  ]);
+
+  const caAuj = aujourdhui.chiffre_affaires?.total ?? null;
+  const caHier = hier.chiffre_affaires?.total ?? null;
+  let variationCaPourcentage = null;
+  if (caAuj !== null && caHier) {
+    variationCaPourcentage = ((caAuj - caHier) / caHier) * 100;
+  }
+
+  res.json({ aujourdhui, hier, variation_ca_pourcentage: variationCaPourcentage });
+}
+
 module.exports = {
   personnalise,
   mini,
   activiteRecente,
+  serie,
+  performanceProduits,
+  comparaisonVeille,
   journalier: parPeriode(startOfToday),
   hebdomadaire: parPeriode(() => daysAgo(7)),
   mensuel: parPeriode(startOfMonth),

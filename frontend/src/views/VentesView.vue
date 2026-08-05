@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import api from '../api/client'
 import Modal from '../components/Modal.vue'
+import Pagination from '../components/Pagination.vue'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
 
 const produits = ref([])
@@ -102,14 +103,28 @@ const filtres = reactive({ from: '', to: '', vendeuse_id: '' })
 const detailVisible = ref(false)
 const detailVente = ref(null)
 const detailChargement = ref(false)
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
 
 async function chargerVentes() {
-  const params = {}
+  const params = { page: page.value, pageSize }
   if (filtres.from) params.from = filtres.from
   if (filtres.to) params.to = filtres.to
   if (filtres.vendeuse_id) params.vendeuse_id = filtres.vendeuse_id
   const { data } = await api.get('/ventes', { params })
-  ventes.value = data
+  ventes.value = data.data
+  total.value = data.total
+}
+
+function filtrerVentes() {
+  page.value = 1
+  chargerVentes()
+}
+
+function changerPage(nouvellePage) {
+  page.value = nouvellePage
+  chargerVentes()
 }
 
 async function chargerProduits() {
@@ -246,7 +261,7 @@ onMounted(async () => {
         </div>
         <div class="form-row" style="justify-content: flex-end">
           <label>&nbsp;</label>
-          <button type="button" @click="chargerVentes">Filtrer</button>
+          <button type="button" @click="filtrerVentes">Filtrer</button>
         </div>
       </div>
 
@@ -263,6 +278,7 @@ onMounted(async () => {
           <tr v-if="!ventes.length"><td colspan="4">Aucune vente</td></tr>
         </tbody>
       </table>
+      <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
     </div>
 
     <Modal v-if="detailVisible" title="Detail de la vente" @close="detailVisible = false">

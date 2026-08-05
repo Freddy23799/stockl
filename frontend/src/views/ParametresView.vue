@@ -3,8 +3,10 @@ import { ref, reactive, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import Modal from '../components/Modal.vue'
 import { useModulesStore } from '../stores/modules'
+import { useAuthStore } from '../stores/auth'
 
 const modules = useModulesStore()
+const auth = useAuthStore()
 
 const parametres = ref(null)
 const loading = ref(true)
@@ -49,9 +51,19 @@ const logoErreur = ref('')
 
 const utilisateurs = ref([])
 const compteVisible = ref(false)
-const compteForm = reactive({ nom: '', email: '', password: '' })
+const compteForm = reactive({ prenom: '', nom: '' })
 const compteErreur = ref('')
 const compteSoumission = ref(false)
+// Identifiant + mot de passe generes, montres UNE SEULE FOIS apres creation.
+// Le mot de passe n'est stocke qu'en hash cote serveur : une fois cet encart
+// ferme, il est definitivement irrecuperable.
+const compteCree = ref(null)
+
+const motDePasseVisible = ref(false)
+const motDePasseForm = reactive({ actuel: '', nouveau: '', confirmation: '' })
+const motDePasseErreur = ref('')
+const motDePasseMessage = ref('')
+const motDePasseSoumission = ref(false)
 
 async function charger() {
   loading.value = true
@@ -110,8 +122,9 @@ async function envoyerLogo() {
 }
 
 function ouvrirCompte() {
-  Object.assign(compteForm, { nom: '', email: '', password: '' })
+  Object.assign(compteForm, { prenom: '', nom: '' })
   compteErreur.value = ''
+  compteCree.value = null
   compteVisible.value = true
 }
 
@@ -119,13 +132,54 @@ async function creerCompte() {
   compteSoumission.value = true
   compteErreur.value = ''
   try {
-    await api.post('/utilisateurs', compteForm)
-    compteVisible.value = false
+    const { data } = await api.post('/utilisateurs', compteForm)
+    compteCree.value = {
+      nom_utilisateur: data.nom_utilisateur,
+      mot_de_passe: data.mot_de_passe_initial,
+      personne: `${data.prenom} ${data.nom}`,
+    }
     await charger()
   } catch (err) {
     compteErreur.value = err.response?.data?.message || 'Erreur lors de la creation du compte'
   } finally {
     compteSoumission.value = false
+  }
+}
+
+// Fermer l'encart efface le mot de passe de la memoire du navigateur. Il n'est
+// affiche qu'ici, une seule fois, et n'est plus jamais recuperable ensuite.
+function fermerCompte() {
+  compteCree.value = null
+  compteVisible.value = false
+}
+
+function ouvrirMotDePasse() {
+  Object.assign(motDePasseForm, { actuel: '', nouveau: '', confirmation: '' })
+  motDePasseErreur.value = ''
+  motDePasseVisible.value = true
+}
+
+async function changerMotDePasse() {
+  if (motDePasseForm.nouveau !== motDePasseForm.confirmation) {
+    motDePasseErreur.value = 'Les deux nouveaux mots de passe ne correspondent pas.'
+    return
+  }
+  motDePasseSoumission.value = true
+  motDePasseErreur.value = ''
+  try {
+    const { data } = await api.patch('/utilisateurs/moi/mot-de-passe', {
+      mot_de_passe_actuel: motDePasseForm.actuel,
+      nouveau_mot_de_passe: motDePasseForm.nouveau,
+    })
+    // Jeton renouvele sur place : la session continue, aucun retour a l'ecran
+    // de connexion et rien a ressaisir.
+    auth.setSession(data.token, data.user)
+    motDePasseVisible.value = false
+    motDePasseMessage.value = 'Mot de passe modifie. Votre session reste ouverte.'
+  } catch (err) {
+    motDePasseErreur.value = err.response?.data?.message || 'Erreur lors du changement de mot de passe'
+  } finally {
+    motDePasseSoumission.value = false
   }
 }
 
@@ -240,6 +294,18 @@ async function desactiverCompte(u) {
 
       <div class="card">
         <div class="page-header">
+          <h2>Mon mot de passe</h2>
+          <button type="button" class="primary" @click="ouvrirMotDePasse">Changer</button>
+        </div>
+        <p style="font-size: 13px; opacity: 0.75">
+          Le compte livre a l'installation utilise un mot de passe par defaut, identique sur
+          toutes les installations. Changez-le des la premiere connexion.
+        </p>
+        <p v-if="motDePasseMessage">{{ motDePasseMessage }}</p>
+      </div>
+
+      <div class="card">
+        <div class="page-header">
           <h2>Comptes administrateurs</h2>
           <button type="button" class="primary" @click="ouvrirCompte">+ Nouveau compte</button>
         </div>
@@ -248,11 +314,11 @@ async function desactiverCompte(u) {
           dans le module Vendeuses, identifiees par leur code a 6 chiffres.
         </p>
         <table>
-          <thead><tr><th>Nom</th><th>Email</th><th>Statut</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Personne</th><th>Identifiant</th><th>Statut</th><th>Actions</th></tr></thead>
           <tbody>
             <tr v-for="u in utilisateurs" :key="u.id">
-              <td>{{ u.nom }}</td>
-              <td>{{ u.email }}</td>
+              <td>{{ u.prenom }} {{ u.nom }}</td>
+              <td><code>{{ u.nom_utilisateur }}</code></td>
               <td><span class="badge" :class="u.actif ? 'success' : 'danger'">{{ u.actif ? 'Actif' : 'Inactif' }}</span></td>
               <td>
                 <button type="button" class="danger" v-if="u.actif" @click="desactiverCompte(u)">Desactiver</button>
@@ -263,25 +329,68 @@ async function desactiverCompte(u) {
       </div>
     </template>
 
-    <Modal v-if="compteVisible" title="Nouveau compte administrateur" @close="compteVisible = false">
-      <form @submit.prevent="creerCompte">
+    <Modal v-if="motDePasseVisible" title="Changer mon mot de passe" @close="motDePasseVisible = false">
+      <form @submit.prevent="changerMotDePasse">
+        <div class="form-row">
+          <label>Mot de passe actuel</label>
+          <input v-model="motDePasseForm.actuel" type="password" required autocomplete="current-password" />
+        </div>
+        <div class="form-row">
+          <label>Nouveau mot de passe</label>
+          <input v-model="motDePasseForm.nouveau" type="password" required minlength="8" autocomplete="new-password" />
+        </div>
+        <div class="form-row">
+          <label>Confirmer</label>
+          <input v-model="motDePasseForm.confirmation" type="password" required minlength="8" autocomplete="new-password" />
+        </div>
+        <p style="font-size: 12px; opacity: 0.7">8 caracteres minimum. Vous resterez connecte.</p>
+        <p v-if="motDePasseErreur" class="error-message">{{ motDePasseErreur }}</p>
+        <button type="submit" class="primary" :disabled="motDePasseSoumission">
+          {{ motDePasseSoumission ? 'Modification...' : 'Changer le mot de passe' }}
+        </button>
+      </form>
+    </Modal>
+
+    <Modal v-if="compteVisible" title="Nouveau compte administrateur" @close="fermerCompte">
+      <form v-if="!compteCree" @submit.prevent="creerCompte">
+        <div class="form-row">
+          <label>Prenom</label>
+          <input v-model="compteForm.prenom" required />
+        </div>
         <div class="form-row">
           <label>Nom</label>
           <input v-model="compteForm.nom" required />
         </div>
-        <div class="form-row">
-          <label>Email</label>
-          <input v-model="compteForm.email" type="email" required />
-        </div>
-        <div class="form-row">
-          <label>Mot de passe</label>
-          <input v-model="compteForm.password" type="password" required minlength="6" />
-        </div>
+        <p style="font-size: 12px; opacity: 0.7">
+          L'identifiant de connexion et le mot de passe sont generes automatiquement
+          et affiches une seule fois a la creation.
+        </p>
         <p v-if="compteErreur" class="error-message">{{ compteErreur }}</p>
         <button type="submit" class="primary" :disabled="compteSoumission">
           {{ compteSoumission ? 'Creation...' : 'Creer le compte' }}
         </button>
       </form>
+
+      <div v-else>
+        <p style="margin-bottom: 12px">
+          Compte cree pour <strong>{{ compteCree.personne }}</strong>.
+          Notez ces identifiants et transmettez-les : <strong>ils ne seront plus jamais affiches</strong>.
+        </p>
+        <div class="form-row">
+          <label>Identifiant</label>
+          <input :value="compteCree.nom_utilisateur" readonly onclick="this.select()" />
+        </div>
+        <div class="form-row">
+          <label>Mot de passe</label>
+          <input :value="compteCree.mot_de_passe" readonly onclick="this.select()" />
+        </div>
+        <p style="font-size: 12px; opacity: 0.7">
+          Le mot de passe n'est enregistre que sous forme chiffree : il est
+          irrecuperable une fois cette fenetre fermee. La personne pourra le
+          changer elle-meme depuis Parametres.
+        </p>
+        <button type="button" class="primary" @click="fermerCompte">J'ai note ces identifiants</button>
+      </div>
     </Modal>
   </div>
 </template>

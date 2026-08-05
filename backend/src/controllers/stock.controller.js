@@ -1,5 +1,6 @@
 const pool = require('../config/db');
 const { entreeStock } = require('../services/stock.service');
+const { getPagination } = require('../utils/pagination');
 
 async function etat(req, res) {
   const { rows } = await pool.query(
@@ -64,6 +65,9 @@ async function mouvements(req, res) {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const { rows: paramRows } = await pool.query('SELECT module_fournisseurs FROM parametres WHERE id = 1');
   const fournisseursActif = paramRows[0].module_fournisseurs;
+  const { page, pageSize, offset } = getPagination(req);
+
+  const { rows: countRows } = await pool.query(`SELECT COUNT(*)::int AS total FROM mouvements_stock m ${where}`, params);
 
   // Si le module fournisseurs est desactive, le lien fournisseur des mouvements
   // passes reste invisible tant qu'il est eteint (coherent avec le reste du systeme).
@@ -72,10 +76,11 @@ async function mouvements(req, res) {
      FROM mouvements_stock m
      JOIN produits p ON p.id = m.produit_id
      LEFT JOIN fournisseurs f ON f.id = m.fournisseur_id
-     ${where} ORDER BY m.date DESC LIMIT 500`,
-    params
+     ${where} ORDER BY m.date DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, pageSize, offset]
   );
-  res.json(fournisseursActif ? rows : rows.map((r) => ({ ...r, fournisseur_id: null, fournisseur_nom: null })));
+  const data = fournisseursActif ? rows : rows.map((r) => ({ ...r, fournisseur_id: null, fournisseur_nom: null }));
+  res.json({ data, total: countRows[0].total, page, pageSize });
 }
 
 module.exports = { etat, alertes, creerEntree, mouvements };

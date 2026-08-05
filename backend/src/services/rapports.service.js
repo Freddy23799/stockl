@@ -98,4 +98,111 @@ async function computeResume({ from, to, vendeuseId }) {
   };
 }
 
-module.exports = { computeResume };
+// Serie quotidienne (CA + depenses par jour) pour tracer une courbe de tendance.
+// Ne fait aucun appel externe : tout est calcule a partir des donnees deja en base.
+async function computeSerieQuotidienne({ from, to, vendeuseId }) {
+  const { ventesActif, depensesActif } = await getModulesActifs();
+  if (!from || !to) throw new Error('from et to sont requis');
+
+  let parJourVentes = [];
+  if (ventesActif) {
+    const conditions = [`date >= $1`, `date <= $2`];
+    const params = [from, to];
+    if (vendeuseId) { params.push(vendeuseId); conditions.push(`vendeuse_id = $${params.length}`); }
+    const { rows } = await pool.query(
+      `SELECT to_char(date_trunc('day', date), 'YYYY-MM-DD') AS jour,
+              COALESCE(SUM(montant_total), 0) AS chiffre_affaires,
+              COUNT(*) AS nombre_ventes
+       FROM ventes WHERE ${conditions.join(' AND ')}
+       GROUP BY 1 ORDER BY 1`,
+      params
+    );
+    parJourVentes = rows;
+  }
+
+  let parJourDepenses = [];
+  if (depensesActif) {
+    const { rows } = await pool.query(
+      `SELECT to_char(date_trunc('day', date), 'YYYY-MM-DD') AS jour,
+              COALESCE(SUM(montant), 0) AS depenses
+       FROM depenses WHERE date >= $1 AND date <= $2
+       GROUP BY 1 ORDER BY 1`,
+      [from, to]
+    );
+    parJourDepenses = rows;
+  }
+
+  const parJour = new Map();
+  for (const r of parJourVentes) {
+    parJour.set(r.jour, { jour: r.jour, chiffre_affaires: Number(r.chiffre_affaires), nombre_ventes: Number(r.nombre_ventes), depenses: depensesActif ? 0 : null });
+  }
+  for (const r of parJourDepenses) {
+    const existant = parJour.get(r.jour) || { jour: r.jour, chiffre_affaires: ventesActif ? 0 : null, nombre_ventes: ventesActif ? 0 : null, depenses: 0 };
+    existant.depenses = Number(r.depenses);
+    parJour.set(r.jour, existant);
+  }
+
+  return {
+    modules_actifs: { ventes: ventesActif, depenses: depensesActif },
+    serie: Array.from(parJour.values()).sort((a, b) => a.jour.localeCompare(b.jour)),
+  };
+}
+
+// Detecte les produits qui se vendent le mieux / le moins bien sur une periode,
+// avec leur tendance par rapport a la periode precedente de meme duree.
+// Regles locales, deterministes, calculees a partir des donnees du systeme -
+// aucun appel externe, aucun modele: juste un classement + une comparaison.
+async function computePerformanceProduits({ from, to, limite = 5 }) {
+  const { ventesActif } = await getModulesActifs();
+  if (!ventesActif) return { actif: false, meilleures_ventes: [], faibles_ventes: [] };
+  if (!from || !to) throw new Error('from et to sont requis');
+
+  const dureeMs = new Date(to).getTime() - new Date(from).getTime();
+  const fromPrecedent = new Date(new Date(from).getTime() - dureeMs).toISOString();
+  const toPrecedent = from;
+
+  async function ventesParProduit(debut, fin) {
+    const { rows } = await pool.query(
+      `SELECT p.id, p.nom, p.photo, COALESCE(SUM(vl.quantite), 0) AS quantite_vendue,
+              COALESCE(SUM(vl.quantite * vl.prix_vente_snapshot), 0) AS montant
+       FROM produits p
+       LEFT JOIN ventes_lignes vl ON vl.produit_id = p.id
+       LEFT JOIN ventes v ON v.id = vl.vente_id AND v.date >= $1 AND v.date <= $2
+       WHERE p.actif = true
+       GROUP BY p.id, p.nom, p.photo`,
+      [debut, fin]
+    );
+    return new Map(rows.map((r) => [r.id, { ...r, quantite_vendue: Number(r.quantite_vendue), montant: Number(r.montant) }]));
+  }
+
+  const actuel = await ventesParProduit(from, to);
+  const precedent = await ventesParProduit(fromPrecedent, toPrecedent);
+
+  const classement = Array.from(actuel.values()).map((p) => {
+    const avant = precedent.get(p.id);
+    const quantiteAvant = avant ? avant.quantite_vendue : 0;
+    let tendance = 'stable';
+    let variationPourcentage = null;
+    if (quantiteAvant > 0) {
+      variationPourcentage = ((p.quantite_vendue - quantiteAvant) / quantiteAvant) * 100;
+      if (variationPourcentage > 10) tendance = 'hausse';
+      else if (variationPourcentage < -10) tendance = 'baisse';
+    } else if (p.quantite_vendue > 0) {
+      tendance = 'hausse';
+    }
+    return { ...p, quantite_vendue_periode_precedente: quantiteAvant, tendance, variation_pourcentage: variationPourcentage };
+  });
+
+  const vendus = classement.filter((p) => p.quantite_vendue > 0).sort((a, b) => b.quantite_vendue - a.quantite_vendue);
+  const meilleuresVentes = vendus.slice(0, limite);
+
+  // "Faibles ventes" = produits actifs peu ou pas vendus sur la periode (y compris zero),
+  // pour repérer le surstock dormant - pas juste les derniers du classement des vendus.
+  const faiblesVentes = classement
+    .sort((a, b) => a.quantite_vendue - b.quantite_vendue)
+    .slice(0, limite);
+
+  return { actif: true, meilleures_ventes: meilleuresVentes, faibles_ventes: faiblesVentes };
+}
+
+module.exports = { computeResume, computeSerieQuotidienne, computePerformanceProduits };

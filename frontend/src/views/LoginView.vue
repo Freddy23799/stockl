@@ -7,7 +7,7 @@ import logo from '../assets/branding/logo-machibel.png'
 const auth = useAuthStore()
 const router = useRouter()
 
-const email = ref('')
+const identifiant = ref('')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -16,7 +16,7 @@ async function submit() {
   error.value = ''
   loading.value = true
   try {
-    await auth.login(email.value, password.value)
+    await auth.login(identifiant.value, password.value)
     router.push({ name: 'dashboard' })
   } catch (err) {
     error.value = err.response?.data?.message || 'Erreur de connexion'
@@ -35,8 +35,8 @@ async function submit() {
 
       <form @submit.prevent="submit">
         <div class="form-row">
-          <label for="email">Email</label>
-          <input id="email" v-model="email" type="email" autocomplete="username" required />
+          <label for="identifiant">Identifiant</label>
+          <input id="identifiant" v-model="identifiant" type="text" autocomplete="username" placeholder="prenom.nom" required />
         </div>
         <div class="form-row">
           <label for="password">Mot de passe</label>

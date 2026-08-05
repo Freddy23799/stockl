@@ -18,4 +18,11 @@ router.get('/activite-recente', requireAuth, requireRole('admin'), rapportsContr
 // Mini-rapport pour une vendeuse donnee (par id ou par code) - usage Admin
 router.get('/mini', requireAuth, requireRole('admin'), rapportsController.mini);
 
+// Serie quotidienne (graphique de tendance) et performance produits (Admin)
+router.get('/serie', requireAuth, requireRole('admin'), rapportsController.serie);
+router.get('/performance-produits', requireAuth, requireRole('admin'), rapportsController.performanceProduits);
+
+// Comparaison aujourd'hui vs hier (tableau de bord, Admin)
+router.get('/comparaison-veille', requireAuth, requireRole('admin'), rapportsController.comparaisonVeille);
+
 module.exports = router;

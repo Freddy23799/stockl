@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import api from '../api/client'
 import { formatDate } from '../utils/format'
+import Pagination from '../components/Pagination.vue'
 
 const operations = ref([])
 const utilisateurs = ref([])
@@ -9,6 +10,9 @@ const loading = ref(true)
 const erreur = ref('')
 
 const filtres = reactive({ type_operation: '', utilisateur_id: '', from: '', to: '' })
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
 
 const typesConnus = [
   'produit_creation', 'produit_modification', 'produit_changement_prix', 'produit_desactivation',
@@ -24,18 +28,29 @@ async function charger() {
   loading.value = true
   erreur.value = ''
   try {
-    const params = {}
+    const params = { page: page.value, pageSize }
     if (filtres.type_operation) params.type_operation = filtres.type_operation
     if (filtres.utilisateur_id) params.utilisateur_id = filtres.utilisateur_id
     if (filtres.from) params.from = filtres.from
     if (filtres.to) params.to = filtres.to
     const { data } = await api.get('/historique', { params })
-    operations.value = data
+    operations.value = data.data
+    total.value = data.total
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
     loading.value = false
   }
+}
+
+function filtrer() {
+  page.value = 1
+  charger()
+}
+
+function changerPage(nouvellePage) {
+  page.value = nouvellePage
+  charger()
 }
 
 onMounted(async () => {
@@ -81,7 +96,7 @@ onMounted(async () => {
         </div>
         <div class="form-row" style="justify-content: flex-end">
           <label>&nbsp;</label>
-          <button type="button" @click="charger">Filtrer</button>
+          <button type="button" @click="filtrer">Filtrer</button>
         </div>
       </div>
 
@@ -99,6 +114,7 @@ onMounted(async () => {
           <tr v-if="!operations.length"><td colspan="4">Aucune operation</td></tr>
         </tbody>
       </table>
+      <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
     </div>
   </div>
 </template>

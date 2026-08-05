@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import api from '../api/client'
 import { useModulesStore } from '../stores/modules'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
@@ -12,17 +12,23 @@ const erreur = ref('')
 const rapportJour = ref(null)
 const alertes = ref([])
 const activite = ref(null)
+const comparaisonVeille = ref(null)
+
+// Variation du CA du jour par rapport a hier (null si pas calculable, cf endpoint)
+const variationCa = computed(() => comparaisonVeille.value?.variation_ca_pourcentage ?? null)
 
 onMounted(async () => {
   try {
-    const [rapportRes, alertesRes, activiteRes] = await Promise.all([
+    const [rapportRes, alertesRes, activiteRes, comparaisonRes] = await Promise.all([
       api.get('/rapports/journalier'),
       api.get('/stock/alertes'),
       api.get('/rapports/activite-recente?limite=8'),
+      modules.ventes ? api.get('/rapports/comparaison-veille') : Promise.resolve({ data: null }),
     ])
     rapportJour.value = rapportRes.data
     alertes.value = alertesRes.data
     activite.value = activiteRes.data
+    comparaisonVeille.value = comparaisonRes.data
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
@@ -44,7 +50,12 @@ onMounted(async () => {
       <div class="card-grid" style="margin-bottom: 16px">
         <div class="card stat" v-if="modules.ventes">
           <div class="label">Chiffre d'affaires (aujourd'hui)</div>
-          <div class="value">{{ formatMontant(rapportJour.chiffre_affaires.total) }}</div>
+          <div class="value">
+            {{ formatMontant(rapportJour.chiffre_affaires.total) }}
+            <span v-if="variationCa !== null" class="badge" :class="variationCa >= 0 ? 'success' : 'danger'" style="vertical-align: middle; margin-left: 4px">
+              {{ variationCa >= 0 ? '▲' : '▼' }} {{ Math.abs(variationCa).toFixed(1) }}%
+            </span>
+          </div>
         </div>
         <div class="card stat" v-if="modules.ventes">
           <div class="label">Ventes (aujourd'hui)</div>

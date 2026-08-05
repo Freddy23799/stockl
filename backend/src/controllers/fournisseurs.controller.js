@@ -11,9 +11,7 @@ async function list(req, res) {
   res.json(rows);
 }
 
-// Vue d'ensemble : tous les fournisseurs avec leur total achete (page de stats)
-async function listAvecTotaux(req, res) {
-  const { from, to } = req.query;
+async function totauxPourPeriode(from, to) {
   const conditionsJoin = [`m.fournisseur_id = f.id`, `m.type = 'entree'`];
   const params = [];
   if (from) { params.push(from); conditionsJoin.push(`m.date >= $${params.length}`); }
@@ -30,7 +28,44 @@ async function listAvecTotaux(req, res) {
      ORDER BY montant_total DESC`,
     params
   );
-  res.json(rows);
+  return rows.map((r) => ({
+    ...r,
+    nombre_achats: Number(r.nombre_achats),
+    quantite_totale: Number(r.quantite_totale),
+    montant_total: Number(r.montant_total),
+  }));
+}
+
+// Vue d'ensemble : tous les fournisseurs avec leur total achete (page de stats).
+// Si from/to sont fournis, ajoute une comparaison vs la periode precedente de
+// meme duree (tendance de livraison/depense par fournisseur, calculee localement).
+async function listAvecTotaux(req, res) {
+  const { from, to } = req.query;
+  const actuel = await totauxPourPeriode(from, to);
+
+  if (!from || !to) {
+    res.json(actuel);
+    return;
+  }
+
+  const dureeMs = new Date(to).getTime() - new Date(from).getTime();
+  const fromPrecedent = new Date(new Date(from).getTime() - dureeMs).toISOString();
+  const precedent = await totauxPourPeriode(fromPrecedent, from);
+  const precedentParId = new Map(precedent.map((f) => [f.id, f]));
+
+  const avecComparaison = actuel.map((f) => {
+    const avant = precedentParId.get(f.id);
+    const montantAvant = avant ? avant.montant_total : 0;
+    let variationPourcentage = null;
+    if (montantAvant > 0) {
+      variationPourcentage = ((f.montant_total - montantAvant) / montantAvant) * 100;
+    } else if (f.montant_total > 0) {
+      variationPourcentage = 100;
+    }
+    return { ...f, montant_periode_precedente: montantAvant, variation_pourcentage: variationPourcentage };
+  });
+
+  res.json(avecComparaison);
 }
 
 async function getById(req, res) {

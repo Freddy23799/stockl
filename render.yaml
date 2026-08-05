@@ -1,0 +1,55 @@
+# Blueprint de deploiement MACHIBEL.
+#
+# Runtime Node natif : pas de Docker ici. Le docker-compose.yml a la racine ne
+# sert QUE au developpement local (simuler PostgreSQL sur la machine de dev).
+#
+# Un seul service web : le processus Node sert l'API *et* la PWA compilee, donc
+# une seule origine, pas de reverse proxy, pas de CORS entre le front et l'API.
+
+services:
+  - type: web
+    name: machibel
+    runtime: node
+    plan: starter
+    region: frankfurt
+    branch: main
+
+    # Installe les deux paquets et compile la PWA dans frontend/dist,
+    # que le backend servira ensuite.
+    buildCommand: npm run build
+    startCommand: npm start
+
+    # Le demarrage applique les migrations et cree le compte admin :
+    # rien a lancer a la main apres un deploiement.
+    healthCheckPath: /health
+
+    domains:
+      - stock.schoolshub.org
+
+    envVars:
+      # Rattachee automatiquement : rien a copier a la main.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: machibel-db
+          property: connectionString
+
+      # Genere par Render au premier deploiement, puis conserve.
+      - key: JWT_SECRET
+        generateValue: true
+
+      - key: NODE_ENV
+        value: production
+
+    # Les photos produits et le logo sont ecrits sur le disque. Sans ce disque
+    # persistant, ils disparaissent a chaque redeploiement.
+    disk:
+      name: machibel-uploads
+      mountPath: /opt/render/project/src/backend/uploads
+      sizeGB: 1
+
+databases:
+  - name: machibel-db
+    databaseName: machibel
+    user: machibel
+    plan: basic-256mb
+    region: frankfurt

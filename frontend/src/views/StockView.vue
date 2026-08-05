@@ -3,6 +3,7 @@ import { ref, reactive, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import { useModulesStore } from '../stores/modules'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
+import Pagination from '../components/Pagination.vue'
 
 const modules = useModulesStore()
 
@@ -18,6 +19,9 @@ const entreeErreur = ref('')
 const entreeSoumission = ref(false)
 
 const filtres = reactive({ produit_id: '', type: '', from: '', to: '' })
+const page = ref(1)
+const pageSize = 20
+const total = ref(0)
 
 async function chargerEtat() {
   const { data } = await api.get('/stock')
@@ -25,13 +29,24 @@ async function chargerEtat() {
 }
 
 async function chargerMouvements() {
-  const params = {}
+  const params = { page: page.value, pageSize }
   if (filtres.produit_id) params.produit_id = filtres.produit_id
   if (filtres.type) params.type = filtres.type
   if (filtres.from) params.from = filtres.from
   if (filtres.to) params.to = filtres.to
   const { data } = await api.get('/stock/mouvements', { params })
-  mouvements.value = data
+  mouvements.value = data.data
+  total.value = data.total
+}
+
+function filtrerMouvements() {
+  page.value = 1
+  chargerMouvements()
+}
+
+function changerPage(nouvellePage) {
+  page.value = nouvellePage
+  chargerMouvements()
 }
 
 async function chargerReferences() {
@@ -167,7 +182,7 @@ onMounted(async () => {
         </div>
         <div class="form-row" style="justify-content: flex-end">
           <label>&nbsp;</label>
-          <button type="button" @click="chargerMouvements">Filtrer</button>
+          <button type="button" @click="filtrerMouvements">Filtrer</button>
         </div>
       </div>
 
@@ -187,6 +202,7 @@ onMounted(async () => {
           <tr v-if="!mouvements.length"><td :colspan="modules.fournisseurs ? 6 : 5">Aucun mouvement</td></tr>
         </tbody>
       </table>
+      <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
     </div>
   </div>
 </template>

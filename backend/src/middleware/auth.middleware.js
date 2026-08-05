@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { JWT_SECRET } = require('../config/secret');
+const { jwtSecret } = require('../config');
 
 function requireAuth(req, res, next) {
   const header = req.headers.authorization;
@@ -8,7 +8,7 @@ function requireAuth(req, res, next) {
   }
   try {
     const token = header.slice('Bearer '.length);
-    req.user = jwt.verify(token, JWT_SECRET);
+    req.user = jwt.verify(token, jwtSecret);
     next();
   } catch (err) {
     return res.status(401).json({ message: 'Token invalide ou expire' });

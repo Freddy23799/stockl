@@ -1,10 +1,12 @@
 const path = require('path');
 const multer = require('multer');
 
+const config = require('../config');
+
 // Photos produits : ecrites directement sur disque dans uploads/produits/.
 // La fiche produit ne stocke que le nom de fichier (colonne texte), jamais le BLOB.
 const storage = multer.diskStorage({
-  destination: path.join(__dirname, '..', '..', 'uploads', 'produits'),
+  destination: path.join(config.uploadsDir, 'produits'),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     const productId = req.params.id || Date.now();
@@ -25,7 +27,7 @@ const uploadProduitPhoto = multer({
 // (nom fixe -> le nouvel upload remplace l'ancien). Reutilise en en-tete de
 // tous les documents generes (rapports, exports).
 const logoStorage = multer.diskStorage({
-  destination: path.join(__dirname, '..', '..', 'uploads', 'logo'),
+  destination: path.join(config.uploadsDir, 'logo'),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, `logo-machibel${ext}`);
