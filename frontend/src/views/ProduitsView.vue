@@ -323,7 +323,7 @@ async function envoyerPhoto() {
         />
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th style="width: 46px"></th>
@@ -336,22 +336,22 @@ async function envoyerPhoto() {
                 <th class="sortable td-num" :class="{ 'is-sorted': triColonne === 'quantite_stock' }" @click="trier('quantite_stock')">
                   Stock <span class="sort-arrow">{{ triColonne === 'quantite_stock' && triSens === 'desc' ? '▼' : '▲' }}</span>
                 </th>
-                <th>Conditionnement</th>
+                <th class="hide-sm">Conditionnement</th>
                 <th class="td-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="p in produitsAffiches" :key="p.id">
-                <td>
+                <td data-label="">
                   <img v-if="p.photo" :src="assetUrl(p.photo)" class="thumb" alt="" />
                   <div v-else class="thumb"><Icon name="image" :size="15" /></div>
                 </td>
-                <td>
+                <td data-label="Produit" class="td-titre">
                   <div class="td-strong">{{ p.nom }}</div>
                   <span v-if="!p.actif" class="badge mt-2">Archive</span>
                 </td>
-                <td class="td-num td-strong tnum">{{ formatMontant(p.prix_vente) }}</td>
-                <td class="td-num">
+                <td data-label="Prix" class="td-num td-strong tnum">{{ formatMontant(p.prix_vente) }}</td>
+                <td data-label="Stock" class="td-num">
                   <span
                     class="badge"
                     :class="Number(p.quantite_stock) <= Number(p.seuil_alerte) ? 'danger' : 'success'"
@@ -360,13 +360,13 @@ async function envoyerPhoto() {
                   </span>
                   <div class="small muted mt-2 tnum">seuil {{ formatQuantite(p.seuil_alerte) }}</div>
                 </td>
-                <td class="small muted">
+                <td data-label="Conditionnement" class="small muted hide-sm">
                   <template v-if="p.unite_achat">
                     1 {{ p.unite_achat }} = {{ formatQuantite(p.facteur_conversion) }} {{ p.unite_stock }}
                   </template>
                   <template v-else>Vendu a l'unite</template>
                 </td>
-                <td class="td-actions">
+                <td data-label="" class="td-actions">
                   <button type="button" class="btn-sm btn-ghost" title="Modifier" @click="ouvrirEdition(p)">
                     <Icon name="edit" :size="15" />
                   </button>
@@ -466,16 +466,16 @@ async function envoyerPhoto() {
         desc="Le prix de vente n'a jamais ete modifie depuis la creation du produit."
       />
       <div v-else class="table-wrap">
-        <table>
+        <table class="table-cards">
           <thead>
             <tr><th>Date</th><th class="td-num">Ancien</th><th class="td-num">Nouveau</th><th class="td-num">Ecart</th></tr>
           </thead>
           <tbody>
             <tr v-for="h in historiquePrix" :key="h.id">
-              <td class="small muted nowrap">{{ formatDate(h.date) }}</td>
-              <td class="td-num tnum muted">{{ formatMontant(h.ancien_prix) }}</td>
-              <td class="td-num tnum td-strong">{{ formatMontant(h.nouveau_prix) }}</td>
-              <td class="td-num">
+              <td data-label="Date" class="td-titre small muted nowrap">{{ formatDate(h.date) }}</td>
+              <td data-label="Ancien" class="td-num tnum muted">{{ formatMontant(h.ancien_prix) }}</td>
+              <td data-label="Nouveau" class="td-num tnum td-strong">{{ formatMontant(h.nouveau_prix) }}</td>
+              <td data-label="Ecart" class="td-num">
                 <span class="badge" :class="Number(h.nouveau_prix) >= Number(h.ancien_prix) ? 'success' : 'danger'">
                   {{ Number(h.nouveau_prix) >= Number(h.ancien_prix) ? '+' : '' }}{{ formatMontant(Number(h.nouveau_prix) - Number(h.ancien_prix)) }}
                 </span>

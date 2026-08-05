@@ -1022,6 +1022,71 @@ th.is-sorted .sort-arrow { opacity: 1; color: var(--accent); }
 .login-brand h1 { font-size: 20px; }
 .login-brand p { font-size: 13px; color: var(--text-muted); margin-top: 3px; }
 
+/* Barre de navigation basse (mobile) --------------------------------------
+   Sur telephone, le pouce atteint le bas de l'ecran, pas le coin superieur
+   gauche. Les quatre destinations les plus utilisees y sont donc accessibles
+   en permanence, le menu lateral ne servant plus qu'au reste. */
+
+.bottom-nav { display: none; }
+
+@media (max-width: 700px) {
+  .bottom-nav {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 40;
+    background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+    backdrop-filter: saturate(180%) blur(12px);
+    border-top: 1px solid var(--border);
+    /* Encoche des telephones recents */
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  .bottom-nav-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 8px 4px 7px;
+    min-height: 56px;
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 10.5px;
+    font-weight: 550;
+    position: relative;
+  }
+  .bottom-nav-link:hover { text-decoration: none; }
+  .bottom-nav-link.router-link-exact-active { color: var(--accent); }
+  .bottom-nav-link.router-link-exact-active::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 22%;
+    right: 22%;
+    height: 2px;
+    border-radius: 0 0 2px 2px;
+    background: var(--accent);
+  }
+  .bottom-nav-pastille {
+    position: absolute;
+    top: 5px;
+    left: 50%;
+    margin-left: 6px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: var(--r-full);
+    background: var(--danger);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+  }
+}
+
 /* Utilitaires ------------------------------------------------------------ */
 
 .muted { color: var(--text-muted); }
@@ -1045,6 +1110,87 @@ th.is-sorted .sort-arrow { opacity: 1; color: var(--accent); }
 
 /* -- Responsive ------------------------------------------------------------ */
 
+/* Cibles tactiles : au moins 40px.
+   Deux declencheurs volontairement independants — un ecran tactile quelle que
+   soit sa largeur (telephone, tablette, borne), et un petit ecran quel que soit
+   le pointeur. Se fier au seul `pointer: coarse` laisserait passer les
+   navigateurs qui l'annoncent mal. */
+@media (pointer: coarse), (max-width: 700px) {
+  button, .btn, select,
+  input:not([type='checkbox']):not([type='radio']):not([type='file']) {
+    min-height: 42px;
+  }
+  .btn-sm { min-height: 40px; padding: 8px 12px; }
+  .icon-btn { width: 42px; height: 42px; }
+  .tab { min-height: 46px; }
+  .nav-link { min-height: 44px; }
+  input[type='checkbox'], input[type='radio'] { width: 20px; height: 20px; }
+  td .btn-sm { min-height: 40px; min-width: 40px; }
+  .toast-close { min-height: 32px; }
+}
+
+/* -----------------------------------------------------------------------------
+   Tables en cartes sous 700px.
+
+   Une table de six colonnes sur un ecran de 375px est illisible : soit elle
+   deborde, soit on la fait defiler lateralement et on perd l'en-tete de vue.
+   Chaque ligne devient donc une carte, et chaque cellule affiche son intitule
+   via l'attribut data-label. Les tables concernees portent la classe
+   `table-cards` et leurs <td> un `data-label`.
+   -------------------------------------------------------------------------- */
+@media (max-width: 700px) {
+  .table-cards { display: block; }
+  .table-cards thead { display: none; }
+  .table-cards tbody { display: block; }
+
+  .table-cards tr {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: 10px 13px;
+    margin: 10px;
+    background: var(--bg-panel);
+  }
+  .table-cards tr:hover { background: var(--bg-panel); }
+
+  .table-cards td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 6px 0;
+    border: none;
+    text-align: left !important;
+  }
+  .table-cards td + td { border-top: 1px dashed var(--border); }
+
+  .table-cards td::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  /* Cellule sans intitule (vignette, actions) : elle occupe toute la largeur. */
+  .table-cards td[data-label='']::before,
+  .table-cards td:not([data-label])::before { content: none; }
+
+  .table-cards td.td-actions {
+    justify-content: flex-end;
+    gap: 6px;
+    padding-top: 10px;
+  }
+  /* La cellule vedette (nom du produit, personne) sert de titre a la carte. */
+  .table-cards td.td-titre {
+    justify-content: flex-start;
+    font-size: 15px;
+    padding-bottom: 9px;
+  }
+  .table-cards td.td-titre::before { content: none; }
+}
+
 @media (max-width: 980px) {
   :root { --sidebar-w: 234px; }
   .sidebar {
@@ -1066,15 +1212,71 @@ th.is-sorted .sort-arrow { opacity: 1; color: var(--accent); }
   }
 }
 
-@media (max-width: 640px) {
-  .page-head { flex-direction: column; align-items: stretch; }
+@media (max-width: 700px) {
+  .page { padding: 14px 12px 72px; }
+  .page-head { flex-direction: column; align-items: stretch; gap: 12px; }
   .page-head-actions { width: 100%; }
-  .page-head-actions > .btn-primary, .page-head-actions > button.primary { flex: 1; }
-  .grid-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
-  .stat-value { font-size: 21px; }
+  .page-head-actions > .btn-primary,
+  .page-head-actions > button.primary { flex: 1; justify-content: center; }
+
+  /* Deux tuiles par ligne : une seule colonne gaspille l'ecran, trois ecrasent. */
+  .grid { gap: 10px; }
+  .grid-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat { padding: 12px 13px; }
+  .stat-value { font-size: 19px; }
+  .stat-foot { font-size: 11px; }
+
+  .card-head { padding: 12px 14px; }
+  .card-body { padding: 14px; }
+  .card-foot { padding: 11px 14px; }
+  .search { max-width: none; min-width: 0; }
+
+  /* Les filtres empiles a la verticale restent utilisables au pouce. */
+  .toolbar { gap: 10px; }
+  .toolbar > .field { flex: 1 1 100%; min-width: 0; }
+
+  /* 16px minimum : en dessous, iOS zoome automatiquement sur le champ actif
+     et l'utilisateur se retrouve avec une page decalee a chaque saisie. */
+  input, select, textarea { font-size: 16px; }
+
+  .modal-backdrop { padding: 0; align-items: flex-end; }
+  .modal {
+    max-width: none;
+    max-height: 94svh;
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    border-bottom: none;
+  }
+  .modal-enter-from .modal, .modal-leave-to .modal { transform: translateY(24px); }
   .modal-foot { flex-direction: column-reverse; }
   .modal-foot > button { width: 100%; }
-  .toasts { left: 14px; right: 14px; bottom: 14px; max-width: none; }
+
+  .toasts { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+  .pagination { justify-content: space-between; }
+  .pagination .toolbar-spacer { display: none; }
+
+  /* Colonnes secondaires : masquees quand la place manque. */
+  .hide-sm { display: none !important; }
+
+  /* Un groupe de boutons alignes horizontalement deborde des 375px. Il passe en
+     grille de deux colonnes ; le rayon est porte par le conteneur, ce qui reste
+     correct quel que soit le nombre de boutons. */
+  .btn-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    border-radius: var(--r-sm);
+    overflow: hidden;
+  }
+  .btn-group > button {
+    margin: 0 -1px -1px 0;
+    border-radius: 0;
+  }
+  .btn-group > button:first-child,
+  .btn-group > button:last-child { border-radius: 0; }
+}
+
+@media (max-width: 380px) {
+  .grid-stats { grid-template-columns: 1fr; }
 }
 
 /* -- Impression ------------------------------------------------------------ */

@@ -248,36 +248,36 @@ async function soumettreEntree() {
         />
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th style="width: 46px"></th>
                 <th>Produit</th>
                 <th class="td-num">Stock</th>
                 <th class="td-num">Seuil</th>
-                <th class="td-num">Cout moyen</th>
+                <th class="td-num hide-sm">Cout moyen</th>
                 <th class="td-num">Valeur</th>
                 <th class="td-actions"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="p in etatFiltre" :key="p.id">
-                <td>
+                <td data-label="">
                   <img v-if="p.photo" :src="assetUrl(p.photo)" class="thumb" alt="" />
                   <div v-else class="thumb"><Icon name="image" :size="15" /></div>
                 </td>
-                <td class="td-strong">{{ p.nom }}</td>
-                <td class="td-num">
+                <td data-label="Produit" class="td-titre td-strong">{{ p.nom }}</td>
+                <td data-label="Stock" class="td-num">
                   <span class="badge" :class="Number(p.quantite_stock) <= 0 ? 'danger' : p.en_alerte ? 'warning' : 'success'">
                     {{ formatQuantite(p.quantite_stock) }} {{ p.unite_stock }}
                   </span>
                 </td>
-                <td class="td-num tnum muted">{{ formatQuantite(p.seuil_alerte) }}</td>
-                <td class="td-num tnum">{{ formatMontant(p.cout_moyen_pondere) }}</td>
-                <td class="td-num tnum td-strong">
+                <td data-label="Seuil" class="td-num tnum muted">{{ formatQuantite(p.seuil_alerte) }}</td>
+                <td data-label="Cout moyen" class="td-num tnum hide-sm">{{ formatMontant(p.cout_moyen_pondere) }}</td>
+                <td data-label="Valeur" class="td-num tnum td-strong">
                   {{ formatMontant(Number(p.quantite_stock) * Number(p.cout_moyen_pondere)) }}
                 </td>
-                <td class="td-actions">
+                <td data-label="" class="td-actions">
                   <button type="button" class="btn-sm" @click="ouvrirEntree(p.id)">
                     <Icon name="plus" :size="14" /> Reapprovisionner
                   </button>
@@ -335,30 +335,30 @@ async function soumettreEntree() {
         </EmptyState>
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th>Produit</th>
                 <th>Type</th>
                 <th class="td-num">Quantite</th>
                 <th class="td-num">Cout unitaire</th>
-                <th v-if="modules.fournisseurs">Fournisseur</th>
+                <th v-if="modules.fournisseurs" class="hide-sm">Fournisseur</th>
                 <th class="td-num">Date</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="m in mouvements" :key="m.id">
-                <td class="td-strong">{{ m.produit_nom }}</td>
-                <td>
+                <td data-label="Produit" class="td-titre td-strong">{{ m.produit_nom }}</td>
+                <td data-label="Type">
                   <span class="badge" :class="m.type === 'entree' ? 'success' : 'warning'">
                     <Icon :name="m.type === 'entree' ? 'boxIn' : 'boxOut'" :size="12" />
                     {{ m.type === 'entree' ? 'Entree' : 'Sortie' }}
                   </span>
                 </td>
-                <td class="td-num tnum td-strong">{{ formatQuantite(m.quantite) }}</td>
-                <td class="td-num tnum muted">{{ formatMontant(m.cout_unitaire) }}</td>
-                <td v-if="modules.fournisseurs" class="muted">{{ m.fournisseur_nom || '—' }}</td>
-                <td class="td-num small muted nowrap">{{ formatDate(m.date) }}</td>
+                <td data-label="Quantite" class="td-num tnum td-strong">{{ formatQuantite(m.quantite) }}</td>
+                <td data-label="Cout unitaire" class="td-num tnum muted">{{ formatMontant(m.cout_unitaire) }}</td>
+                <td v-if="modules.fournisseurs" data-label="Fournisseur" class="muted hide-sm">{{ m.fournisseur_nom || '—' }}</td>
+                <td data-label="Date" class="td-num small muted nowrap">{{ formatDate(m.date) }}</td>
               </tr>
             </tbody>
           </table>

@@ -276,12 +276,12 @@ async function ouvrirHistorique(f) {
         />
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th>Fournisseur</th>
                 <th class="td-num">Achats</th>
-                <th class="td-num">Quantite</th>
+                <th class="td-num hide-sm">Quantite</th>
                 <th class="td-num">Montant</th>
                 <th v-if="periodeActive" class="td-num">Variation</th>
                 <th class="td-actions">Actions</th>
@@ -289,14 +289,14 @@ async function ouvrirHistorique(f) {
             </thead>
             <tbody>
               <tr v-for="f in listeAffichee" :key="f.id">
-                <td>
+                <td data-label="Fournisseur" class="td-titre">
                   <div class="td-strong">{{ f.nom }}</div>
                   <div class="small muted">{{ f.contact || 'Aucun contact' }}</div>
                 </td>
-                <td class="td-num tnum">{{ f.nombre_achats }}</td>
-                <td class="td-num tnum muted">{{ formatQuantite(f.quantite_totale) }}</td>
-                <td class="td-num td-strong tnum">{{ formatMontant(f.montant_total) }}</td>
-                <td v-if="periodeActive" class="td-num">
+                <td data-label="Achats" class="td-num tnum">{{ f.nombre_achats }}</td>
+                <td data-label="Quantite" class="td-num tnum muted hide-sm">{{ formatQuantite(f.quantite_totale) }}</td>
+                <td data-label="Montant" class="td-num td-strong tnum">{{ formatMontant(f.montant_total) }}</td>
+                <td v-if="periodeActive" data-label="Variation" class="td-num">
                   <span
                     v-if="typeof f.variation_pourcentage === 'number'"
                     class="badge"
@@ -310,7 +310,7 @@ async function ouvrirHistorique(f) {
                   </span>
                   <span v-else class="muted">—</span>
                 </td>
-                <td class="td-actions">
+                <td data-label="" class="td-actions">
                   <button type="button" class="btn-sm btn-ghost" title="Historique des achats" @click="ouvrirHistorique(f)">
                     <Icon name="history" :size="15" />
                   </button>
@@ -399,7 +399,7 @@ async function ouvrirHistorique(f) {
           desc="Aucune entree de stock n'a encore ete rattachee a ce fournisseur."
         />
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th>Produit</th>
@@ -410,10 +410,10 @@ async function ouvrirHistorique(f) {
             </thead>
             <tbody>
               <tr v-for="a in historiqueAchats" :key="a.id">
-                <td class="td-strong">{{ a.produit_nom }}</td>
-                <td class="td-num tnum">{{ formatQuantite(a.quantite) }}</td>
-                <td class="td-num tnum muted">{{ formatMontant(a.cout_unitaire) }}</td>
-                <td class="td-num small muted nowrap">{{ formatDate(a.date) }}</td>
+                <td data-label="Produit" class="td-titre td-strong">{{ a.produit_nom }}</td>
+                <td data-label="Quantite" class="td-num tnum">{{ formatQuantite(a.quantite) }}</td>
+                <td data-label="Cout unitaire" class="td-num tnum muted">{{ formatMontant(a.cout_unitaire) }}</td>
+                <td data-label="Date" class="td-num small muted nowrap">{{ formatDate(a.date) }}</td>
               </tr>
             </tbody>
           </table>

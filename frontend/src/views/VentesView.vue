@@ -660,7 +660,10 @@ onMounted(async () => {
 .caisse {
   display: grid;
   gap: 16px;
-  grid-template-columns: 1fr;
+  /* minmax(0, 1fr) et non 1fr : `1fr` vaut `minmax(auto, 1fr)`, dont la borne
+     basse est la largeur mini du contenu. Sur un ecran etroit, la colonne
+     refuse alors de retrecir et fait deborder toute la page. */
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
 }
 @media (min-width: 1040px) {

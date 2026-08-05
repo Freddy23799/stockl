@@ -197,19 +197,19 @@ async function basculerActivation(v) {
         />
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th>Code</th>
                 <th>Nom</th>
-                <th>Contact</th>
+                <th class="hide-sm">Contact</th>
                 <th>Statut</th>
                 <th class="td-actions">Actions</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="v in vendeusesAffichees" :key="v.id">
-                <td>
+                <td data-label="Code">
                   <div class="row">
                     <span class="code-cell">{{ v.code }}</span>
                     <button
@@ -222,14 +222,14 @@ async function basculerActivation(v) {
                     </button>
                   </div>
                 </td>
-                <td class="td-strong">{{ v.nom }}</td>
-                <td class="muted">{{ v.contact || '—' }}</td>
-                <td>
+                <td data-label="Nom" class="td-titre td-strong">{{ v.nom }}</td>
+                <td data-label="Contact" class="muted hide-sm">{{ v.contact || '—' }}</td>
+                <td data-label="Statut">
                   <span class="badge" :class="v.actif ? 'success' : 'danger'">
                     <span class="badge-dot" />{{ v.actif ? 'Active' : 'Desactivee' }}
                   </span>
                 </td>
-                <td class="td-actions">
+                <td data-label="" class="td-actions">
                   <button type="button" class="btn-sm btn-ghost" title="Modifier" @click="ouvrirEdition(v)">
                     <Icon name="edit" :size="15" />
                   </button>

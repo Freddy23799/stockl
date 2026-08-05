@@ -253,28 +253,28 @@ onMounted(async () => {
         />
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th style="width: 160px">Date</th>
                 <th>Operation</th>
                 <th>Utilisateur</th>
-                <th>Details</th>
+                <th class="hide-sm">Details</th>
                 <th class="td-actions"></th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="op in operationsAffichees" :key="op.id">
-                <td class="small muted nowrap">{{ formatDate(op.date) }}</td>
-                <td>
+                <td data-label="Date" class="small muted nowrap">{{ formatDate(op.date) }}</td>
+                <td data-label="Operation" class="td-titre">
                   <span class="badge" :class="decrire(op.type_operation).ton">
                     <Icon :name="decrire(op.type_operation).icone" :size="13" />
                     {{ decrire(op.type_operation).libelle }}
                   </span>
-                  <div class="small muted mono mt-2">{{ op.type_operation }}</div>
+                  <div class="small muted mono mt-2 hide-sm">{{ op.type_operation }}</div>
                 </td>
-                <td class="td-strong">{{ op.utilisateur_nom || '-' }}</td>
-                <td>
+                <td data-label="Utilisateur" class="td-strong">{{ op.utilisateur_nom || '-' }}</td>
+                <td data-label="Details" class="hide-sm">
                   <div v-if="resumeDetails(op.details).length" class="row wrap" style="gap: 6px">
                     <span v-for="d in resumeDetails(op.details)" :key="d.cle" class="badge">
                       <span class="muted">{{ d.etiquette }}</span> {{ d.valeur }}
@@ -282,7 +282,7 @@ onMounted(async () => {
                   </div>
                   <span v-else class="small muted">Aucun detail</span>
                 </td>
-                <td class="td-actions">
+                <td data-label="" class="td-actions">
                   <button
                     type="button"
                     class="btn-sm btn-ghost"

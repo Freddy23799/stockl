@@ -65,6 +65,15 @@ const sections = computed(() => [
   },
 ].filter((s) => s.items.length))
 
+// Navigation basse : quatre destinations maximum, choisies pour l'usage
+// quotidien en boutique. Le reste passe par le menu lateral.
+const navBasse = computed(() => [
+  { to: '/', label: 'Accueil', icon: 'dashboard' },
+  ...(modules.ventes ? [{ to: '/ventes', label: 'Ventes', icon: 'cart' }] : []),
+  { to: '/stock', label: 'Stock', icon: 'layers', badge: alertes.value || null },
+  { to: '/produits', label: 'Produits', icon: 'package' },
+])
+
 const titreCourant = computed(() => {
   for (const s of sections.value) {
     const item = s.items.find((i) => i.to === route.path)
@@ -161,5 +170,14 @@ watch(() => route.path, (p) => { if (p === '/stock' || p === '/produits') charge
         <slot />
       </main>
     </div>
+
+    <!-- Navigation basse : visible uniquement sur telephone (voir style.css) -->
+    <nav class="bottom-nav">
+      <router-link v-for="i in navBasse" :key="i.to" :to="i.to" class="bottom-nav-link">
+        <Icon :name="i.icon" :size="20" />
+        <span>{{ i.label }}</span>
+        <span v-if="i.badge" class="bottom-nav-pastille">{{ i.badge }}</span>
+      </router-link>
+    </nav>
   </div>
 </template>

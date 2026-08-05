@@ -220,7 +220,7 @@ async function soumettre() {
         </EmptyState>
 
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th>Categorie</th>
@@ -231,10 +231,10 @@ async function soumettre() {
             </thead>
             <tbody>
               <tr v-for="d in depensesAffichees" :key="d.id">
-                <td><span class="badge accent">{{ d.categorie }}</span></td>
-                <td class="muted">{{ d.note || '—' }}</td>
-                <td class="td-num td-strong tnum">{{ formatMontant(d.montant) }}</td>
-                <td class="td-num small muted nowrap">{{ formatDate(d.date) }}</td>
+                <td data-label="Categorie" class="td-titre"><span class="badge accent">{{ d.categorie }}</span></td>
+                <td data-label="Note" class="muted">{{ d.note || '—' }}</td>
+                <td data-label="Montant" class="td-num td-strong tnum">{{ formatMontant(d.montant) }}</td>
+                <td data-label="Date" class="td-num small muted nowrap">{{ formatDate(d.date) }}</td>
               </tr>
             </tbody>
           </table>
@@ -264,7 +264,7 @@ async function soumettre() {
           desc="Aucune depense sur la periode selectionnee."
         />
         <div v-else class="table-wrap">
-          <table>
+          <table class="table-cards">
             <thead>
               <tr>
                 <th>Categorie</th>
@@ -275,8 +275,8 @@ async function soumettre() {
             </thead>
             <tbody>
               <tr v-for="c in parCategorie" :key="c.categorie">
-                <td class="td-strong">{{ c.categorie }}</td>
-                <td>
+                <td data-label="Categorie" class="td-titre td-strong">{{ c.categorie }}</td>
+                <td data-label="Part">
                   <div class="row" style="gap: 9px">
                     <div class="barre-piste">
                       <div class="barre-valeur" :style="{ width: `${Math.max(2, c.part * 100)}%` }" />
@@ -284,8 +284,8 @@ async function soumettre() {
                     <span class="small muted tnum nowrap">{{ (c.part * 100).toFixed(1) }}%</span>
                   </div>
                 </td>
-                <td class="td-num tnum muted">{{ c.nombre }}</td>
-                <td class="td-num td-strong tnum">{{ formatMontant(c.total) }}</td>
+                <td data-label="Nombre" class="td-num tnum muted">{{ c.nombre }}</td>
+                <td data-label="Total" class="td-num td-strong tnum">{{ formatMontant(c.total) }}</td>
               </tr>
             </tbody>
           </table>

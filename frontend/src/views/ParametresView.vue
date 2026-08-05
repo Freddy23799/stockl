@@ -510,19 +510,19 @@ async function copier(texte, libelle) {
         <div class="card-body card-body-flush">
           <EmptyState v-if="!utilisateurs.length" icon="users" title="Aucun compte" desc="Aucun compte administrateur n'existe." />
           <div v-else class="table-wrap">
-            <table>
+            <table class="table-cards">
               <thead>
                 <tr>
                   <th>Personne</th>
                   <th>Identifiant</th>
                   <th>Statut</th>
-                  <th class="td-num">Cree le</th>
+                  <th class="td-num hide-sm">Cree le</th>
                   <th class="td-actions"></th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="u in utilisateurs" :key="u.id">
-                  <td>
+                  <td data-label="Personne" class="td-titre">
                     <div class="row" style="gap: 9px">
                       <span class="avatar">{{ ((u.prenom || '')[0] || '') + ((u.nom || '')[0] || '') }}</span>
                       <span>
@@ -531,14 +531,14 @@ async function copier(texte, libelle) {
                       </span>
                     </div>
                   </td>
-                  <td><code class="strong">{{ u.nom_utilisateur }}</code></td>
-                  <td>
+                  <td data-label="Identifiant"><code class="strong">{{ u.nom_utilisateur }}</code></td>
+                  <td data-label="Statut">
                     <span class="badge" :class="u.actif ? 'success' : 'danger'">
                       <span class="badge-dot" />{{ u.actif ? 'Actif' : 'Desactive' }}
                     </span>
                   </td>
-                  <td class="td-num small muted nowrap">{{ formatDateCourt(u.created_at) }}</td>
-                  <td class="td-actions">
+                  <td data-label="Cree le" class="td-num small muted nowrap hide-sm">{{ formatDateCourt(u.created_at) }}</td>
+                  <td data-label="" class="td-actions">
                     <button
                       v-if="u.actif && u.id !== auth.user?.id"
                       type="button"
