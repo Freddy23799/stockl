@@ -6,6 +6,28 @@ const { logAudit } = require('../db/audit');
 const { genererNomUtilisateurUnique } = require('../utils/identifiant');
 const { genererMotDePasse } = require('../utils/motdepasse');
 
+// Champs d'un compte retenus pour le journal. Liste blanche explicite : la
+// ligne `utilisateurs` porte aussi `password_hash`, qui ne doit sortir de la
+// base sous aucun pretexte - meme un hash n'a rien a faire dans un ecran
+// consultable et exportable. (logAudit filtre en second rideau, voir audit.js.)
+const CHAMPS_AUDIT_UTILISATEUR = ['prenom', 'nom', 'nom_utilisateur', 'email', 'role', 'actif'];
+
+function etatUtilisateurPourAudit(utilisateur) {
+  if (!utilisateur) return null;
+  const etat = {};
+  for (const champ of CHAMPS_AUDIT_UTILISATEUR) etat[champ] = utilisateur[champ];
+  return etat;
+}
+
+// Libelles figes au moment de l'ecriture : un compte peut etre renomme, la
+// ligne d'audit doit rester comprehensible sans aller relire la fiche.
+function libellesCompte(utilisateur) {
+  return {
+    utilisateur_nom: [utilisateur.prenom, utilisateur.nom].filter(Boolean).join(' ') || utilisateur.nom_utilisateur,
+    nom_utilisateur: utilisateur.nom_utilisateur,
+  };
+}
+
 async function list(req, res) {
   const { rows } = await pool.query(
     `SELECT id, prenom, nom, nom_utilisateur, email, role, actif, created_at
@@ -48,7 +70,8 @@ async function create(req, res) {
       typeOperation: 'utilisateur_creation',
       entiteId: utilisateur.id,
       utilisateurId: req.user?.id,
-      details: { nom_utilisateur: nomUtilisateur },
+      details: libellesCompte(utilisateur),
+      apres: etatUtilisateurPourAudit(utilisateur),
     });
 
     await client.query('COMMIT');
@@ -114,11 +137,14 @@ async function changerMotDePasse(req, res) {
           WHERE id = $2`,
         [nouveauHash, req.user.id]
       );
-      // Le nouveau mot de passe n'est evidemment jamais journalise.
+      // Ni le mot de passe ni son empreinte ne sont journalises : la ligne ne
+      // porte que l'identite du compte et le fait que les autres sessions ont
+      // ete coupees. Il n'y a donc volontairement ni `avant` ni `apres` ici.
       await logAudit(client, {
         typeOperation: 'utilisateur_changement_mot_de_passe',
         entiteId: req.user.id,
         utilisateurId: req.user.id,
+        details: { ...libellesCompte(utilisateurRows[0]), sessions_coupees: true },
       });
       await client.query('COMMIT');
     } catch (err) {
@@ -152,6 +178,19 @@ async function changerMotDePasse(req, res) {
 
 async function desactiver(req, res) {
   const { id } = req.params;
+
+  // Se bloquer soi-meme, c'est se deconnecter sans pouvoir revenir : la
+  // reactivation demande un compte administrateur connecte. Ce cas est distinct
+  // de celui du dernier admin ci-dessous - un admin parmi plusieurs peut tres
+  // bien se bloquer lui-meme sans fermer le systeme, et se retrouver dehors.
+  if (Number(id) === req.user?.id) {
+    return res.status(409).json({
+      message: 'Vous ne pouvez pas bloquer votre propre compte. '
+        + 'Demandez a un autre administrateur de le faire.',
+      code: 'AUTO_BLOCAGE',
+    });
+  }
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -173,6 +212,17 @@ async function desactiver(req, res) {
       });
     }
 
+    const { rows: existantsRows } = await client.query(
+      `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
+         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    if (existantsRows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Utilisateur introuvable' });
+    }
+    const existant = existantsRows[0];
+
     // Coupe aussi les sessions deja ouvertes : sans ce seuil, un compte
     // desactive resterait utilisable jusqu'a l'expiration de son jeton.
     const { rows } = await client.query(
@@ -180,17 +230,16 @@ async function desactiver(req, res) {
           SET actif = false,
               tokens_invalides_avant = date_trunc('second', now())
         WHERE id = $1
-      RETURNING id, prenom, nom, nom_utilisateur, role, actif`,
+      RETURNING id, prenom, nom, nom_utilisateur, email, role, actif`,
       [id]
     );
-    if (rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ message: 'Utilisateur introuvable' });
-    }
     await logAudit(client, {
       typeOperation: 'utilisateur_desactivation',
       entiteId: Number(id),
       utilisateurId: req.user?.id,
+      details: { ...libellesCompte(existant), sessions_coupees: true },
+      avant: etatUtilisateurPourAudit(existant),
+      apres: etatUtilisateurPourAudit(rows[0]),
     });
     await client.query('COMMIT');
     res.json(rows[0]);
@@ -202,4 +251,52 @@ async function desactiver(req, res) {
   }
 }
 
-module.exports = { list, create, changerMotDePasse, desactiver };
+async function reactiver(req, res) {
+  const { id } = req.params;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: existantsRows } = await client.query(
+      `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
+         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    if (existantsRows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Utilisateur introuvable' });
+    }
+    const existant = existantsRows[0];
+
+    // DECISION : `tokens_invalides_avant` n'est PAS touche ici.
+    //
+    // Ce seuil a ete pose au blocage pour couper les sessions ouvertes (voir
+    // migration 006). Le remettre a NULL ressusciterait les jetons emis avant le
+    // blocage et encore dans leur fenetre de 12 h : la session qu'on venait de
+    // fermer redeviendrait valide toute seule, sans nouvelle connexion. Le seuil
+    // reste donc en place - il ne gene pas la reactivation, puisque tout jeton
+    // obtenu apres est necessairement emis apres lui.
+    const { rows } = await client.query(
+      `UPDATE utilisateurs SET actif = true WHERE id = $1
+       RETURNING id, prenom, nom, nom_utilisateur, email, role, actif`,
+      [id]
+    );
+    await logAudit(client, {
+      typeOperation: 'utilisateur_reactivation',
+      entiteId: Number(id),
+      utilisateurId: req.user?.id,
+      details: libellesCompte(existant),
+      avant: etatUtilisateurPourAudit(existant),
+      apres: etatUtilisateurPourAudit(rows[0]),
+    });
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = { list, create, changerMotDePasse, desactiver, reactiver };

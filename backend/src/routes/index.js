@@ -12,5 +12,6 @@ router.use('/depenses', require('./depenses.routes'));
 router.use('/rapports', require('./rapports.routes'));
 router.use('/parametres', require('./parametres.routes'));
 router.use('/historique', require('./historique.routes'));
+router.use('/exports', require('./exports.routes'));
 
 module.exports = router;

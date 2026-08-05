@@ -36,7 +36,13 @@ async function create(req, res) {
       typeOperation: 'depense_creation',
       entiteId: rows[0].id,
       utilisateurId: req.user.id,
-      details: { categorie, montant },
+      details: { categorie: rows[0].categorie, montant: rows[0].montant },
+      apres: {
+        categorie: rows[0].categorie,
+        montant: rows[0].montant,
+        note: rows[0].note,
+        date: rows[0].date,
+      },
     });
     await client.query('COMMIT');
     res.status(201).json(rows[0]);

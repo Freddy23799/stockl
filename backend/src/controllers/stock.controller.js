@@ -1,4 +1,5 @@
 const pool = require('../config/db');
+const { preparerAudit, completerAudit } = require('../db/audit');
 const { entreeStock } = require('../services/stock.service');
 const { getPagination } = require('../utils/pagination');
 
@@ -19,6 +20,11 @@ async function alertes(req, res) {
   res.json(rows);
 }
 
+async function nomFournisseur(client, fournisseurId) {
+  const { rows } = await client.query('SELECT nom FROM fournisseurs WHERE id = $1', [fournisseurId]);
+  return rows[0]?.nom || null;
+}
+
 async function creerEntree(req, res) {
   const { produit_id, quantite_achat, cout_achat_total, fournisseur_id } = req.body;
   if (!produit_id || !(Number(quantite_achat) > 0) || cout_achat_total === undefined || Number(cout_achat_total) < 0) {
@@ -35,6 +41,28 @@ async function creerEntree(req, res) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // C'est `entreeStock` qui ecrit la ligne d'audit, mais lui seul ne voit pas
+    // l'operation de bout en bout : on encadre l'appel pour capturer le stock
+    // d'avant (lu dans la meme transaction) et celui d'apres, plus les libelles
+    // qui ne seront plus recuperables si la fiche est renommee ou archivee.
+    const { rows: avantRows } = await client.query(
+      'SELECT nom, unite_stock, quantite_stock, cout_moyen_pondere FROM produits WHERE id = $1',
+      [produit_id]
+    );
+    const fournisseurNom = fournisseur_id ? await nomFournisseur(client, fournisseur_id) : null;
+    preparerAudit(client, {
+      typeOperation: 'entree_stock',
+      details: { produit_nom: avantRows[0]?.nom || null, fournisseur_nom: fournisseurNom },
+      avant: avantRows[0]
+        ? {
+          quantite_stock: avantRows[0].quantite_stock,
+          cout_moyen_pondere: avantRows[0].cout_moyen_pondere,
+          unite_stock: avantRows[0].unite_stock,
+        }
+        : null,
+    });
+
     const { produit, mouvement } = await entreeStock(client, {
       produitId: produit_id,
       quantiteAchat: quantite_achat,
@@ -42,6 +70,16 @@ async function creerEntree(req, res) {
       auteurId: req.user.id,
       fournisseurId: fournisseur_id || null,
     });
+
+    await completerAudit(client, {
+      typeOperation: 'entree_stock',
+      apres: {
+        quantite_stock: produit.quantite_stock,
+        cout_moyen_pondere: produit.cout_moyen_pondere,
+        unite_stock: produit.unite_stock,
+      },
+    });
+
     await client.query('COMMIT');
     res.status(201).json({ produit, mouvement });
   } catch (err) {

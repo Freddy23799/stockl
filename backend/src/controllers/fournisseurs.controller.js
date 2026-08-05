@@ -89,7 +89,8 @@ async function create(req, res) {
       typeOperation: 'fournisseur_creation',
       entiteId: rows[0].id,
       utilisateurId: req.user.id,
-      details: { nom },
+      details: { fournisseur_nom: rows[0].nom },
+      apres: { nom: rows[0].nom, contact: rows[0].contact, actif: rows[0].actif },
     });
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
@@ -118,15 +119,21 @@ function setActif(actif) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const { rows } = await client.query('UPDATE fournisseurs SET actif = $1 WHERE id = $2 RETURNING *', [actif, id]);
-      if (rows.length === 0) {
+      const { rows: existants } = await client.query('SELECT * FROM fournisseurs WHERE id = $1 FOR UPDATE', [id]);
+      if (existants.length === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ message: 'Fournisseur introuvable' });
       }
+      const existant = existants[0];
+
+      const { rows } = await client.query('UPDATE fournisseurs SET actif = $1 WHERE id = $2 RETURNING *', [actif, id]);
       await logAudit(client, {
         typeOperation: actif ? 'fournisseur_activation' : 'fournisseur_desactivation',
         entiteId: Number(id),
         utilisateurId: req.user.id,
+        details: { fournisseur_nom: existant.nom },
+        avant: { actif: existant.actif },
+        apres: { actif: rows[0].actif },
       });
       await client.query('COMMIT');
       res.json(rows[0]);

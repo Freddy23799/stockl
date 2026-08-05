@@ -19,6 +19,21 @@ async function getById(req, res) {
   res.json(rows[0]);
 }
 
+// Champs de la fiche produit retenus pour le journal d'audit. Liste blanche :
+// une fiche complete transporte aussi un chemin de photo et des horodatages
+// techniques, qui n'apprennent rien a qui relit l'operation.
+const CHAMPS_AUDIT_PRODUIT = [
+  'nom', 'prix_vente', 'unite_stock', 'unite_achat', 'facteur_conversion',
+  'seuil_alerte', 'quantite_stock', 'cout_moyen_pondere', 'actif',
+];
+
+function etatProduitPourAudit(produit) {
+  if (!produit) return null;
+  const etat = {};
+  for (const champ of CHAMPS_AUDIT_PRODUIT) etat[champ] = produit[champ];
+  return etat;
+}
+
 // 1 unite d'achat = facteur_conversion unites de stock. entreeStock divise par
 // cette valeur : a zero ou negative, le calcul du cout unitaire n'a plus de sens.
 function validerFacteurConversion(valeur) {
@@ -52,7 +67,8 @@ async function create(req, res) {
       typeOperation: 'produit_creation',
       entiteId: produit.id,
       utilisateurId: req.user?.id,
-      details: { nom, prix_vente },
+      details: { produit_nom: produit.nom },
+      apres: etatProduitPourAudit(produit),
     });
     await client.query('COMMIT');
     res.status(201).json(produit);
@@ -110,7 +126,11 @@ async function update(req, res) {
         typeOperation: 'produit_changement_prix',
         entiteId: Number(id),
         utilisateurId: req.user?.id,
-        details: { ancien_prix: existing.prix_vente, nouveau_prix: prix_vente },
+        // Le nom est fige ici : la fiche peut etre renommee ou archivee plus
+        // tard, la ligne d'audit doit rester lisible telle quelle.
+        details: { produit_nom: produit.nom },
+        avant: { prix_vente: existing.prix_vente },
+        apres: { prix_vente: produit.prix_vente },
       });
     }
 
@@ -118,6 +138,9 @@ async function update(req, res) {
       typeOperation: 'produit_modification',
       entiteId: Number(id),
       utilisateurId: req.user?.id,
+      details: { produit_nom: produit.nom },
+      avant: etatProduitPourAudit(existing),
+      apres: etatProduitPourAudit(produit),
     });
 
     await client.query('COMMIT');
@@ -135,18 +158,26 @@ async function desactiver(req, res) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Etat lu avant l'archivage, dans la meme transaction : c'est la derniere
+    // occasion de capturer le stock et le prix que le produit avait encore.
+    const { rows: existingRows } = await client.query('SELECT * FROM produits WHERE id = $1 FOR UPDATE', [id]);
+    if (existingRows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Produit introuvable' });
+    }
+    const existing = existingRows[0];
+
     const { rows } = await client.query(
       'UPDATE produits SET actif = false, updated_at = now() WHERE id = $1 RETURNING *',
       [id]
     );
-    if (rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ message: 'Produit introuvable' });
-    }
     await logAudit(client, {
       typeOperation: 'produit_desactivation',
       entiteId: Number(id),
       utilisateurId: req.user?.id,
+      details: { produit_nom: existing.nom },
+      avant: etatProduitPourAudit(existing),
+      apres: etatProduitPourAudit(rows[0]),
     });
     await client.query('COMMIT');
     res.json(rows[0]);

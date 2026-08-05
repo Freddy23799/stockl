@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/client'
 import { formatDate, formatMontant, formatQuantite } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
+import BoutonExport from '../components/ui/BoutonExport.vue'
 import Modal from '../components/ui/Modal.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import TableSkeleton from '../components/ui/TableSkeleton.vue'
@@ -174,7 +175,16 @@ onMounted(async () => {
     <PageHeader
       title="Historique"
       subtitle="Journal d'audit : qui a fait quoi, et quand. Chaque operation sensible y laisse une trace non modifiable."
-    />
+    >
+      <template #actions>
+        <BoutonExport
+          chemin="/exports/historique.pdf"
+          :params="filtres"
+          libelle="Journal d'audit"
+          fichier="journal-audit"
+        />
+      </template>
+    </PageHeader>
 
     <div class="card">
       <div class="card-head">

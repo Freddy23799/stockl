@@ -27,10 +27,108 @@ const ongletActif = ref('general')
 
 const onglets = computed(() => [
   { id: 'general', label: 'General', icon: 'settings' },
+  { id: 'etablissement', label: 'Etablissement', icon: 'building' },
   { id: 'modules', label: 'Modules', icon: 'toggle' },
   { id: 'securite', label: 'Securite', icon: 'shield' },
   { id: 'comptes', label: 'Comptes', icon: 'users', count: utilisateurs.value.length },
 ])
+
+/* --- Identite de l'etablissement ---------------------------------------- */
+
+// Ces informations n'ont qu'un seul consommateur : l'entete des documents
+// imprimes. Un rapport remis a un banquier ou a un comptable doit porter le nom
+// et les coordonnees de la structure, pas seulement des chiffres.
+//
+// Les champs sont groupes comme on les lit sur un en-tete de papier a lettre,
+// et non dans l'ordre des colonnes de la base.
+const GROUPES_ETABLISSEMENT = [
+  {
+    titre: 'Identite',
+    desc: "Apparait en haut de chaque document, a cote du logo.",
+    champs: [
+      { cle: 'etablissement_nom', label: "Nom de l'etablissement", obligatoire: true, large: true },
+      { cle: 'etablissement_slogan', label: 'Slogan', aide: 'Facultatif, en italique sous le nom' },
+      { cle: 'etablissement_activite', label: "Secteur d'activite", aide: 'Ex. Vente de parfums et cosmetiques' },
+    ],
+  },
+  {
+    titre: 'Localisation',
+    desc: "Composee sur une seule ligne dans l'entete, les champs vides sont ignores.",
+    champs: [
+      { cle: 'etablissement_adresse', label: 'Adresse', large: true },
+      { cle: 'etablissement_quartier', label: 'Quartier' },
+      { cle: 'etablissement_ville', label: 'Ville' },
+      { cle: 'etablissement_pays', label: 'Pays' },
+      { cle: 'etablissement_boite_postale', label: 'Boite postale' },
+    ],
+  },
+  {
+    titre: 'Contact',
+    champs: [
+      { cle: 'etablissement_telephone', label: 'Telephone principal', type: 'tel' },
+      { cle: 'etablissement_telephone_2', label: 'Telephone secondaire', type: 'tel' },
+      { cle: 'etablissement_email', label: 'Adresse email', type: 'email' },
+      { cle: 'etablissement_site_web', label: 'Site web' },
+    ],
+  },
+  {
+    titre: 'Mentions legales',
+    desc: 'Imprimees en petits caracteres sous les coordonnees.',
+    champs: [
+      { cle: 'etablissement_registre_commerce', label: 'Registre du commerce' },
+      { cle: 'etablissement_identifiant_fiscal', label: 'Identifiant fiscal' },
+      { cle: 'etablissement_capital', label: 'Capital social' },
+      { cle: 'devise', label: 'Devise', obligatoire: true, aide: 'Ex. FCFA, EUR' },
+      {
+        cle: 'etablissement_mention_pied',
+        label: 'Mention de bas de page',
+        large: true,
+        aide: 'Reprise en pied de chaque page imprimee',
+      },
+    ],
+  },
+]
+
+const CLES_ETABLISSEMENT = GROUPES_ETABLISSEMENT.flatMap((g) => g.champs.map((c) => c.cle))
+
+const etablissement = reactive({})
+const etablissementSoumission = ref(false)
+const etablissementErreur = ref('')
+
+function remplirEtablissement(source) {
+  for (const cle of CLES_ETABLISSEMENT) {
+    // `null` en base doit devenir une chaine vide : lie a un `<input>`, `null`
+    // afficherait le texte "null" dans le champ.
+    etablissement[cle] = source?.[cle] ?? ''
+  }
+}
+
+// Vrai des qu'un champ differe de ce qui est enregistre : evite d'activer le
+// bouton d'enregistrement quand il n'y a rien a enregistrer.
+const etablissementModifie = computed(() =>
+  CLES_ETABLISSEMENT.some((cle) => (etablissement[cle] ?? '') !== (parametres.value?.[cle] ?? ''))
+)
+
+async function enregistrerEtablissement() {
+  etablissementSoumission.value = true
+  etablissementErreur.value = ''
+  try {
+    const charge = Object.fromEntries(CLES_ETABLISSEMENT.map((cle) => [cle, etablissement[cle]]))
+    const { data } = await api.put('/parametres', charge)
+    parametres.value = data
+    remplirEtablissement(data)
+    toasts.succes("Identite de l'etablissement enregistree")
+  } catch (err) {
+    etablissementErreur.value = err.response?.data?.message || 'Erreur lors de l\'enregistrement'
+  } finally {
+    etablissementSoumission.value = false
+  }
+}
+
+function annulerEtablissement() {
+  remplirEtablissement(parametres.value)
+  etablissementErreur.value = ''
+}
 
 async function charger() {
   loading.value = true
@@ -42,6 +140,7 @@ async function charger() {
     ])
     parametres.value = paramsRes.data
     utilisateurs.value = utilisateursRes.data
+    remplirEtablissement(paramsRes.data)
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
@@ -265,6 +364,23 @@ async function confirmerDesactivation() {
   }
 }
 
+// Deblocage. Porte l'id du compte en cours de traitement plutot qu'un booleen :
+// c'est ce qui permet de n'afficher le sablier que sur la ligne concernee.
+const reactivationEnCours = ref(null)
+
+async function reactiver(utilisateur) {
+  reactivationEnCours.value = utilisateur.id
+  try {
+    await api.patch(`/utilisateurs/${utilisateur.id}/reactiver`)
+    toasts.succes(`Compte de ${utilisateur.prenom} ${utilisateur.nom} debloque`)
+    await charger()
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur lors du deblocage')
+  } finally {
+    reactivationEnCours.value = null
+  }
+}
+
 async function copier(texte, libelle) {
   try {
     await navigator.clipboard.writeText(texte)
@@ -306,7 +422,7 @@ async function copier(texte, libelle) {
           <div class="card-body">
             <div class="row wrap" style="gap: 16px; align-items: flex-start">
               <img
-                :src="logoApercu || assetUrl(parametres.logo_path)"
+                :src="logoApercu || assetUrl(parametres.logo_path, { taille: 'moyen' })"
                 class="thumb thumb-lg"
                 alt="Logo actuel"
               />
@@ -392,6 +508,96 @@ async function copier(texte, libelle) {
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- ============ Etablissement ============ -->
+      <div v-show="ongletActif === 'etablissement'" class="stack">
+        <div class="card">
+          <div class="card-body row" style="align-items: flex-start; gap: 12px">
+            <span class="stat-icon is-accent"><Icon name="info" :size="15" /></span>
+            <div class="flex-1">
+              <p class="strong">Ces informations composent l'entete de vos documents</p>
+              <p class="small muted mt-2">
+                Elles apparaissent en haut de chaque rapport PDF, a cote du logo. Tout est
+                facultatif sauf le nom et la devise : les champs laisses vides sont simplement
+                omis de l'entete, sans laisser de ligne blanche.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <form class="stack" @submit.prevent="enregistrerEtablissement">
+          <div v-for="groupe in GROUPES_ETABLISSEMENT" :key="groupe.titre" class="card">
+            <div class="card-head">
+              <div class="card-head-text">
+                <h2>{{ groupe.titre }}</h2>
+                <p v-if="groupe.desc" class="card-head-sub">{{ groupe.desc }}</p>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="grid-champs">
+                <div
+                  v-for="champ in groupe.champs"
+                  :key="champ.cle"
+                  class="field"
+                  :class="{ 'champ-large': champ.large }"
+                >
+                  <label :for="champ.cle">
+                    {{ champ.label }}
+                    <span v-if="champ.obligatoire" class="champ-requis" aria-hidden="true">*</span>
+                  </label>
+                  <textarea
+                    v-if="champ.cle === 'etablissement_mention_pied'"
+                    :id="champ.cle"
+                    v-model="etablissement[champ.cle]"
+                    rows="2"
+                    maxlength="300"
+                  />
+                  <input
+                    v-else
+                    :id="champ.cle"
+                    v-model="etablissement[champ.cle]"
+                    :type="champ.type || 'text'"
+                    :required="champ.obligatoire"
+                    autocomplete="off"
+                  />
+                  <span v-if="champ.aide" class="field-hint">{{ champ.aide }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p v-if="etablissementErreur" class="alert alert-danger">
+            <Icon name="alert" :size="16" /><span>{{ etablissementErreur }}</span>
+          </p>
+
+          <div class="card">
+            <div class="card-body row-between wrap" style="gap: 10px">
+              <span class="small muted">
+                {{ etablissementModifie ? 'Modifications non enregistrees' : 'Tout est enregistre' }}
+              </span>
+              <div class="row" style="gap: 8px">
+                <button
+                  v-if="etablissementModifie"
+                  type="button"
+                  class="btn-ghost"
+                  @click="annulerEtablissement"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  class="primary"
+                  :disabled="etablissementSoumission || !etablissementModifie"
+                >
+                  <span v-if="etablissementSoumission" class="spinner" />
+                  <Icon v-else name="check" :size="15" />
+                  Enregistrer
+                </button>
+              </div>
+            </div>
+          </div>
+        </form>
       </div>
 
       <!-- ============ Modules ============ -->
@@ -539,15 +745,31 @@ async function copier(texte, libelle) {
                   </td>
                   <td data-label="Cree le" class="td-num small muted nowrap hide-sm">{{ formatDateCourt(u.created_at) }}</td>
                   <td data-label="" class="td-actions">
+                    <!-- Le compte connecte n'expose aucune de ces deux actions :
+                         se bloquer soi-meme fermerait la session en cours. Le
+                         serveur refuse aussi le cas, l'interface ne fait que ne
+                         pas proposer l'impasse. -->
                     <button
                       v-if="u.actif && u.id !== auth.user?.id"
                       type="button"
                       class="btn-sm btn-ghost"
-                      title="Desactiver"
+                      title="Bloquer ce compte"
                       style="color: var(--danger)"
                       @click="aDesactiver = u"
                     >
-                      <Icon name="trash" :size="15" />
+                      <Icon name="toggle" :size="15" />
+                    </button>
+                    <button
+                      v-else-if="!u.actif"
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      title="Debloquer ce compte"
+                      style="color: var(--success)"
+                      :disabled="reactivationEnCours === u.id"
+                      @click="reactiver(u)"
+                    >
+                      <span v-if="reactivationEnCours === u.id" class="spinner" />
+                      <Icon v-else name="check" :size="15" />
                     </button>
                   </td>
                 </tr>
@@ -733,4 +955,19 @@ async function copier(texte, libelle) {
   color: var(--text-h);
   letter-spacing: 0.02em;
 }
+
+/* Formulaire de l'etablissement : deux colonnes des qu'il y a la place, une
+   seule sur telephone. `minmax(0, 1fr)` et non `1fr` — `1fr` vaut
+   `minmax(auto, 1fr)`, dont la borne basse est la largeur du contenu, ce qui
+   fait deborder la grille des qu'un champ contient un texte long. */
+.grid-champs {
+  display: grid;
+  gap: 14px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
+}
+/* Un champ marque "large" occupe toute la rangee : une adresse ou une mention
+   legale se lit mal dans une demi-colonne. */
+.champ-large { grid-column: 1 / -1; }
+
+.champ-requis { color: var(--danger); margin-left: 2px; }
 </style>

@@ -75,6 +75,7 @@ async function create(req, res) {
   try {
     await client.query('BEGIN');
 
+    let vendeuseNom = null;
     if (type === 'vendeuse') {
       const { rows: vendeuseRows } = await client.query('SELECT * FROM vendeuses WHERE id = $1', [vendeuse_id]);
       const vendeuse = vendeuseRows[0];
@@ -82,6 +83,7 @@ async function create(req, res) {
         await client.query('ROLLBACK');
         return res.status(400).json({ message: 'La vente doit referencer une vendeuse active' });
       }
+      vendeuseNom = vendeuse.nom;
     }
 
     const { rows: venteRows } = await client.query(
@@ -96,6 +98,7 @@ async function create(req, res) {
 
     let montantTotal = 0;
     const lignesCreees = [];
+    const apercuLignes = [];
     for (const ligne of lignesTriees) {
       const { rows: produitRows } = await client.query('SELECT * FROM produits WHERE id = $1', [ligne.produit_id]);
       const produit = produitRows[0];
@@ -119,6 +122,7 @@ async function create(req, res) {
         [vente.id, ligne.produit_id, ligne.quantite, prixVenteSnapshot, coutUnitaireApplique]
       );
       lignesCreees.push(ligneRows[0]);
+      apercuLignes.push(`${produit.nom} x ${Number(ligne.quantite)}`);
     }
 
     const { rows: venteFinaleRows } = await client.query(
@@ -126,11 +130,21 @@ async function create(req, res) {
       [montantTotal, vente.id]
     );
 
+    // Une vente peut compter des dizaines de lignes : le journal en garde un
+    // apercu (les premieres, plus le compte exact), pas la copie complete.
+    // Le detail integral reste consultable sur la vente elle-meme.
     await logAudit(client, {
       typeOperation: 'vente_creation',
       entiteId: vente.id,
       utilisateurId: req.user.id,
-      details: { type, vendeuse_id: type === 'vendeuse' ? vendeuse_id : null, montant_total: montantTotal },
+      details: {
+        type,
+        vendeuse_id: type === 'vendeuse' ? vendeuse_id : null,
+        vendeuse_nom: vendeuseNom,
+        montant_total: montantTotal,
+        nombre_lignes: lignesCreees.length,
+        lignes_apercu: apercuLignes,
+      },
     });
 
     await client.query('COMMIT');

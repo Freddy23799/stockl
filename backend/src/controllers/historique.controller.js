@@ -18,8 +18,16 @@ async function list(req, res) {
     `SELECT COUNT(*)::int AS total FROM historique_audit h ${where}`,
     params
   );
+  // `utilisateur_nom` porte desormais le nom complet (prenom + nom) : c'est ce
+  // qu'attend un lecteur humain, et l'ecran l'affichait deja sous ce nom-la.
+  // L'identifiant de connexion l'accompagne, seul moyen sur de distinguer deux
+  // homonymes. COALESCE couvre les comptes crees avant la migration 005, qui
+  // n'ont pas de prenom.
   const { rows } = await pool.query(
-    `SELECT h.*, u.nom AS utilisateur_nom
+    `SELECT h.*,
+            COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.prenom, u.nom)), ''), u.nom_utilisateur) AS utilisateur_nom,
+            u.nom_utilisateur AS utilisateur_identifiant,
+            u.actif AS utilisateur_actif
      FROM historique_audit h LEFT JOIN utilisateurs u ON u.id = h.utilisateur_id
      ${where} ORDER BY h.date DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, pageSize, offset]

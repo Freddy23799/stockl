@@ -48,7 +48,8 @@ async function create(req, res) {
       typeOperation: 'vendeuse_creation',
       entiteId: rows[0].id,
       utilisateurId: req.user?.id,
-      details: { nom, code },
+      details: { vendeuse_nom: nom, code },
+      apres: { nom: rows[0].nom, contact: rows[0].contact, code: rows[0].code, actif: rows[0].actif },
     });
     await client.query('COMMIT');
     res.status(201).json(rows[0]);
@@ -77,18 +78,24 @@ function setActif(actif) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      const { rows: existantes } = await client.query('SELECT * FROM vendeuses WHERE id = $1 FOR UPDATE', [id]);
+      if (existantes.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Vendeuse introuvable' });
+      }
+      const existante = existantes[0];
+
       const { rows } = await client.query(
         'UPDATE vendeuses SET actif = $1 WHERE id = $2 RETURNING *',
         [actif, id]
       );
-      if (rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ message: 'Vendeuse introuvable' });
-      }
       await logAudit(client, {
         typeOperation: actif ? 'vendeuse_activation' : 'vendeuse_desactivation',
         entiteId: Number(id),
         utilisateurId: req.user?.id,
+        details: { vendeuse_nom: existante.nom, code: existante.code },
+        avant: { actif: existante.actif },
+        apres: { actif: rows[0].actif },
       });
       await client.query('COMMIT');
       res.json(rows[0]);

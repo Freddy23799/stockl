@@ -5,6 +5,7 @@ import { useModulesStore } from '../stores/modules'
 import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
+import BoutonExport from '../components/ui/BoutonExport.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -170,6 +171,21 @@ async function soumettreEntree() {
   <div>
     <PageHeader title="Stock" subtitle="Etat en temps reel et journal de tous les mouvements d'entree et de sortie.">
       <template #actions>
+        <!-- L'export suit l'onglet consulte : l'inventaire valorise d'un cote,
+             le journal des mouvements filtre de l'autre. -->
+        <BoutonExport
+          v-if="ongletActif === 'etat'"
+          chemin="/exports/stock.pdf"
+          libelle="Etat du stock"
+          fichier="etat-du-stock"
+        />
+        <BoutonExport
+          v-else
+          chemin="/exports/mouvements.pdf"
+          :params="filtres"
+          libelle="Mouvements de stock"
+          fichier="mouvements-de-stock"
+        />
         <button type="button" class="primary" @click="ouvrirEntree()">
           <Icon name="boxIn" :size="15" /> Entree de stock
         </button>
@@ -263,7 +279,7 @@ async function soumettreEntree() {
             <tbody>
               <tr v-for="p in etatFiltre" :key="p.id">
                 <td data-label="">
-                  <img v-if="p.photo" :src="assetUrl(p.photo)" class="thumb" alt="" />
+                  <img v-if="p.photo" :src="assetUrl(p.photo, { taille: 'vignette' })" class="thumb" alt="" />
                   <div v-else class="thumb"><Icon name="image" :size="15" /></div>
                 </td>
                 <td data-label="Produit" class="td-titre td-strong">{{ p.nom }}</td>

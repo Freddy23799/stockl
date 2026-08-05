@@ -36,9 +36,21 @@ api.interceptors.response.use(
 // En production cela donne '' -> les images sont chargees en relatif.
 const API_ROOT = API_BASE.replace(/\/api\/?$/, '')
 
-export function assetUrl(path) {
+/**
+ * URL d'un fichier televerse (photo produit, logo).
+ *
+ * `taille` demande une version reduite au serveur : 'vignette' pour une liste,
+ * 'moyen' pour une fiche. Sans elle, l'original est servi.
+ *
+ * Cela compte : une photo prise au telephone pese plusieurs mega-octets et
+ * s'affiche dans une vignette de quelques dizaines de pixels. Sur une liste de
+ * cinquante produits, servir les originaux fait telecharger cent fois ce qui
+ * est necessaire.
+ */
+export function assetUrl(path, { taille } = {}) {
   if (!path) return null
-  return `${API_ROOT}/${path.replace(/^\/+/, '')}`
+  const url = `${API_ROOT}/${path.replace(/^\/+/, '')}`
+  return taille ? `${url}?taille=${taille}` : url
 }
 
 export default api

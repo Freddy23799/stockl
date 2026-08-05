@@ -1,9 +1,10 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
+import BoutonExport from '../components/ui/BoutonExport.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
@@ -188,7 +189,9 @@ async function ouvrirHistorique(p) {
   }
 }
 
-/* --- Photo -------------------------------------------------------------- */
+/* --- Photo ---------------------------------------------------------------
+   Deux sources : un fichier deja sur l'appareil, ou une prise de vue directe.
+   Dans les deux cas l'image est reduite avant l'envoi. */
 
 const photoVisible = ref(false)
 const photoProduit = ref(null)
@@ -196,21 +199,193 @@ const photoFichier = ref(null)
 const photoApercu = ref('')
 const photoEnvoi = ref(false)
 const photoErreur = ref('')
+// 'choix' : on choisit la source · 'camera' : flux en direct · 'apercu' : image prete
+const photoMode = ref('choix')
+const photoOrigine = ref('fichier')
+const photoPreparation = ref(false)
+const videoRef = ref(null)
+
+// getUserMedia n'existe qu'en contexte securise (HTTPS ou localhost). Sur une
+// origine en clair l'objet est absent : plutot que de proposer un bouton qui
+// echouera, on se rabat sur l'appareil photo natif via `capture`.
+const cameraDisponible =
+  typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
+
+let flux = null
+
+function arreterFlux() {
+  if (flux) {
+    // stop() explicite sur chaque piste : sans cela le voyant de la camera
+    // reste allume et la batterie se vide, la liberation automatique
+    // n'intervient pas a la fermeture de la modale.
+    flux.getTracks().forEach((piste) => piste.stop())
+    flux = null
+  }
+  if (videoRef.value) videoRef.value.srcObject = null
+}
+
+function libererApercu() {
+  if (photoApercu.value) URL.revokeObjectURL(photoApercu.value)
+  photoApercu.value = ''
+}
+
+const COTE_MAX = 1280
+
+// Une photo de telephone fait couramment 4 000 px de large et depasse les 5 Mo
+// acceptes par le serveur. On ramene le plus grand cote a 1280 px en gardant le
+// ratio : largement assez pour une fiche produit, et l'envoi passe.
+function reduireEnJpeg(source, largeurSource, hauteurSource) {
+  const ratio = Math.min(1, COTE_MAX / Math.max(largeurSource, hauteurSource))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(largeurSource * ratio))
+  canvas.height = Math.max(1, Math.round(hauteurSource * ratio))
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height)
+  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85))
+}
+
+function poserPhoto(blob) {
+  libererApercu()
+  // Le serveur valide le format sur l'EXTENSION du nom recu (voir
+  // upload.middleware.js) : un Blob anonyme arriverait sans extension et serait
+  // refuse. D'ou le nom explicite en .jpg.
+  photoFichier.value = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
+  photoApercu.value = URL.createObjectURL(blob)
+  photoMode.value = 'apercu'
+}
+
+function chargerImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = () => reject(new Error('Image illisible'))
+    image.src = url
+  })
+}
+
+async function surChoixFichier(e) {
+  const fichier = e.target.files[0] || null
+  // Le champ est vide immediatement : sans cela, reprendre le MEME fichier
+  // apres un « Reprendre » ne declencherait aucun evenement change.
+  e.target.value = ''
+  if (!fichier) return
+
+  photoErreur.value = ''
+  photoOrigine.value = 'fichier'
+  photoPreparation.value = true
+  const url = URL.createObjectURL(fichier)
+  try {
+    const image = await chargerImage(url)
+    const blob = await reduireEnJpeg(image, image.naturalWidth, image.naturalHeight)
+    if (!blob) throw new Error('Encodage impossible')
+    poserPhoto(blob)
+  } catch {
+    // La reduction a echoue : on envoie le fichier d'origine tel quel. Un refus
+    // explicite du serveur vaut mieux qu'un bouton qui ne fait rien.
+    libererApercu()
+    photoFichier.value = fichier
+    photoApercu.value = URL.createObjectURL(fichier)
+    photoMode.value = 'apercu'
+  } finally {
+    URL.revokeObjectURL(url)
+    photoPreparation.value = false
+  }
+}
+
+function messageErreurCamera(err) {
+  if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
+    return 'Acces a la camera refuse. Autorisez la camera pour ce site dans les reglages du navigateur.'
+  }
+  if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+    return 'Aucune camera detectee sur cet appareil.'
+  }
+  if (err?.name === 'NotReadableError') {
+    return 'La camera est deja utilisee par une autre application.'
+  }
+  if (err?.name === 'OverconstrainedError') {
+    return 'Aucune camera ne correspond aux reglages demandes.'
+  }
+  return 'La camera n\'a pas pu etre ouverte.'
+}
+
+async function ouvrirCamera() {
+  photoErreur.value = ''
+  photoOrigine.value = 'camera'
+  photoMode.value = 'camera'
+  // Le <video> n'existe qu'apres le rendu du mode camera : sans ce nextTick,
+  // srcObject serait pose sur null.
+  await nextTick()
+  try {
+    flux = await navigator.mediaDevices.getUserMedia({
+      // Camera arriere : on photographie un flacon pose devant soi, pas soi.
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } },
+      audio: false,
+    })
+    if (!videoRef.value) {
+      // La modale a ete refermee pendant que l'utilisateur repondait a la
+      // demande d'autorisation : le flux ouvert doit etre relache tout de suite.
+      arreterFlux()
+      return
+    }
+    videoRef.value.muted = true
+    videoRef.value.srcObject = flux
+  } catch (err) {
+    arreterFlux()
+    photoMode.value = 'choix'
+    photoErreur.value = messageErreurCamera(err)
+  }
+}
+
+function annulerCamera() {
+  arreterFlux()
+  photoMode.value = 'choix'
+}
+
+async function capturer() {
+  const video = videoRef.value
+  if (!video || !video.videoWidth) return
+  photoPreparation.value = true
+  try {
+    const blob = await reduireEnJpeg(video, video.videoWidth, video.videoHeight)
+    if (blob) poserPhoto(blob)
+    else photoErreur.value = 'La capture n\'a pas pu etre encodee.'
+  } finally {
+    photoPreparation.value = false
+    // Le cliche est pris : la camera n'a plus aucune raison de rester allumee.
+    arreterFlux()
+  }
+}
+
+function reprendre() {
+  libererApercu()
+  photoFichier.value = null
+  if (photoOrigine.value === 'camera' && cameraDisponible) ouvrirCamera()
+  else photoMode.value = 'choix'
+}
 
 function ouvrirPhoto(p) {
   photoProduit.value = p
   photoFichier.value = null
-  photoApercu.value = ''
+  libererApercu()
   photoErreur.value = ''
+  photoMode.value = 'choix'
+  photoOrigine.value = 'fichier'
   photoVisible.value = true
 }
 
-function surChoixFichier(e) {
-  const f = e.target.files[0] || null
-  photoFichier.value = f
-  // Apercu local avant envoi : on voit ce qu'on televerse sans aller-retour serveur.
-  photoApercu.value = f ? URL.createObjectURL(f) : ''
+function fermerPhoto() {
+  arreterFlux()
+  libererApercu()
+  photoFichier.value = null
+  photoMode.value = 'choix'
+  photoVisible.value = false
 }
+
+// Filet de securite : une navigation vers une autre page demonte la vue sans
+// passer par le bouton Annuler.
+onUnmounted(() => {
+  arreterFlux()
+  libererApercu()
+})
 
 async function envoyerPhoto() {
   if (!photoFichier.value) return
@@ -218,11 +393,12 @@ async function envoyerPhoto() {
   photoErreur.value = ''
   try {
     const formData = new FormData()
-    formData.append('photo', photoFichier.value)
+    // Champ 'photo' : c'est le nom attendu par uploadProduitPhoto.single('photo').
+    formData.append('photo', photoFichier.value, photoFichier.value.name)
     await api.post(`/produits/${photoProduit.value.id}/photo`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
-    photoVisible.value = false
+    fermerPhoto()
     toasts.succes('Photo mise a jour')
     await charger()
   } catch (err) {
@@ -237,6 +413,11 @@ async function envoyerPhoto() {
   <div>
     <PageHeader title="Produits" subtitle="Le catalogue est la reference de tout le systeme : stock, ventes et rapports en dependent.">
       <template #actions>
+        <BoutonExport
+          chemin="/exports/produits.pdf"
+          libelle="Catalogue des produits"
+          fichier="catalogue-produits"
+        />
         <button type="button" class="primary" @click="ouvrirCreation">
           <Icon name="plus" :size="15" /> Nouveau produit
         </button>
@@ -343,7 +524,7 @@ async function envoyerPhoto() {
             <tbody>
               <tr v-for="p in produitsAffiches" :key="p.id">
                 <td data-label="">
-                  <img v-if="p.photo" :src="assetUrl(p.photo)" class="thumb" alt="" />
+                  <img v-if="p.photo" :src="assetUrl(p.photo, { taille: 'vignette' })" class="thumb" alt="" />
                   <div v-else class="thumb"><Icon name="image" :size="15" /></div>
                 </td>
                 <td data-label="Produit" class="td-titre">
@@ -487,24 +668,76 @@ async function envoyerPhoto() {
     </Modal>
 
     <!-- Photo -->
-    <Modal v-if="photoVisible" :title="`Photo — ${photoProduit?.nom}`" @close="photoVisible = false">
+    <Modal v-if="photoVisible" :title="`Photo — ${photoProduit?.nom}`" @close="fermerPhoto">
       <form id="form-photo" @submit.prevent="envoyerPhoto">
-        <div class="row" style="gap: 14px; align-items: flex-start">
-          <img v-if="photoApercu" :src="photoApercu" class="thumb thumb-lg" alt="" />
-          <img v-else-if="photoProduit?.photo" :src="assetUrl(photoProduit.photo)" class="thumb thumb-lg" alt="" />
-          <div v-else class="thumb thumb-lg"><Icon name="image" :size="20" /></div>
-          <div class="field flex-1">
-            <label>Choisir une image</label>
-            <input type="file" accept="image/png,image/jpeg,image/webp" @change="surChoixFichier" />
-            <span class="field-hint">JPG, PNG ou WebP — 5 Mo maximum</span>
+        <!-- Choix de la source -->
+        <template v-if="photoMode === 'choix'">
+          <div class="row" style="gap: 14px; align-items: flex-start">
+            <img v-if="photoProduit?.photo" :src="assetUrl(photoProduit.photo, { taille: 'moyen' })" class="thumb thumb-lg" alt="" />
+            <div v-else class="thumb thumb-lg"><Icon name="image" :size="20" /></div>
+            <p class="flex-1 small muted">
+              L'image est reduite a 1280 px avant l'envoi : une photo prise au telephone
+              depasserait sinon la limite de 5 Mo du serveur.
+            </p>
           </div>
-        </div>
+
+          <div class="photo-sources">
+            <label class="photo-source">
+              <Icon name="download" :size="19" />
+              <span class="photo-source-titre">Importer un fichier</span>
+              <span class="photo-source-desc">JPG, PNG ou WebP</span>
+              <input type="file" accept="image/png,image/jpeg,image/webp" @change="surChoixFichier" />
+            </label>
+
+            <button v-if="cameraDisponible" type="button" class="photo-source" @click="ouvrirCamera">
+              <Icon name="image" :size="19" />
+              <span class="photo-source-titre">Prendre une photo</span>
+              <span class="photo-source-desc">Camera arriere</span>
+            </button>
+            <!-- Pas de getUserMedia (origine non securisee, navigateur ancien) :
+                 `capture` ouvre quand meme l'appareil photo natif sur mobile. -->
+            <label v-else class="photo-source">
+              <Icon name="image" :size="19" />
+              <span class="photo-source-titre">Prendre une photo</span>
+              <span class="photo-source-desc">Appareil photo de l'appareil</span>
+              <input type="file" accept="image/*" capture="environment" @change="surChoixFichier" />
+            </label>
+          </div>
+
+          <p v-if="photoPreparation" class="field-hint row"><span class="spinner" /> Preparation de l'image...</p>
+        </template>
+
+        <!-- Prise de vue -->
+        <template v-else-if="photoMode === 'camera'">
+          <div class="photo-cadre">
+            <video ref="videoRef" autoplay playsinline muted></video>
+          </div>
+          <div class="row" style="gap: 8px">
+            <button type="button" class="flex-1" @click="annulerCamera">Annuler</button>
+            <button type="button" class="primary flex-1" :disabled="photoPreparation" @click="capturer">
+              <span v-if="photoPreparation" class="spinner" />
+              <Icon v-else name="check" :size="15" />
+              Capturer
+            </button>
+          </div>
+        </template>
+
+        <!-- Apercu avant envoi -->
+        <template v-else>
+          <div class="photo-cadre">
+            <img :src="photoApercu" alt="Apercu de la photo a envoyer" />
+          </div>
+          <button type="button" class="btn-block" @click="reprendre">
+            <Icon name="refresh" :size="15" /> Reprendre la photo
+          </button>
+        </template>
+
         <p v-if="photoErreur" class="alert alert-danger">
           <Icon name="alert" :size="16" /><span>{{ photoErreur }}</span>
         </p>
       </form>
       <template #footer>
-        <button type="button" @click="photoVisible = false">Annuler</button>
+        <button type="button" @click="fermerPhoto">Annuler</button>
         <button type="submit" form="form-photo" class="primary" :disabled="!photoFichier || photoEnvoi">
           <span v-if="photoEnvoi" class="spinner" />
           Envoyer
@@ -523,3 +756,65 @@ async function envoyerPhoto() {
     />
   </div>
 </template>
+
+<style scoped>
+/* Deux tuiles de meme poids : importer un fichier n'est pas plus « normal »
+   que photographier, le choix depend de l'endroit ou se trouve la personne. */
+.photo-sources {
+  display: grid;
+  gap: 10px;
+  /* minmax(0, 1fr) et jamais 1fr : la borne basse de `1fr` est la largeur du
+     contenu, la grille refuserait de retrecir sur un ecran de 375 px. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 420px) {
+  .photo-sources { grid-template-columns: minmax(0, 1fr); }
+}
+
+.photo-source {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 2px;
+  padding: 14px;
+  height: auto;
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+  position: relative;
+  transition: border-color var(--transition), background var(--transition);
+}
+.photo-source:hover { border-color: var(--accent); background: var(--accent-soft); }
+.photo-source .icon { color: var(--accent); margin-bottom: 6px; }
+.photo-source-titre { font-size: 13.5px; font-weight: 600; color: var(--text-h); }
+.photo-source-desc { font-size: 11.5px; color: var(--text-muted); }
+/* Le champ natif est masque : c'est la tuile entiere qui sert de cible. */
+.photo-source input[type='file'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.photo-cadre {
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--n-900);
+  border: 1px solid var(--border);
+  aspect-ratio: 4 / 3;
+  display: grid;
+  place-items: center;
+}
+.photo-cadre video,
+.photo-cadre img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+</style>

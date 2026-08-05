@@ -8,6 +8,7 @@ const morgan = require('morgan');
 const config = require('./config');
 const routes = require('./routes');
 const { gererErreursUpload } = require('./middleware/upload.middleware');
+const { servirImageReduite } = require('./middleware/image.middleware');
 
 const app = express();
 
@@ -34,7 +35,9 @@ app.use(cors({
 }));
 app.use(morgan(config.estProduction ? 'combined' : 'dev'));
 app.use(express.json());
-app.use('/uploads', express.static(config.uploadsDir));
+// `?taille=vignette` sert une version reduite ; sans le parametre, le fichier
+// d'origine est servi comme avant. Voir image.middleware.js.
+app.use('/uploads', servirImageReduite, express.static(config.uploadsDir));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 

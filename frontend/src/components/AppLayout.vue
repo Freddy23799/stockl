@@ -6,6 +6,7 @@ import { useModulesStore } from '../stores/modules'
 import { useThemeStore } from '../stores/theme'
 import api from '../api/client'
 import Icon from './ui/Icon.vue'
+import TelechargementIndicateur from './ui/TelechargementIndicateur.vue'
 import logo from '../assets/branding/logo-machibel.png'
 
 const auth = useAuthStore()
@@ -156,6 +157,7 @@ watch(() => route.path, (p) => { if (p === '/stock' || p === '/produits') charge
         </button>
         <span class="topbar-title">{{ titreCourant }}</span>
         <div class="topbar-spacer" />
+        <TelechargementIndicateur />
         <button
           type="button"
           class="icon-btn"

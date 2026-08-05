@@ -4,6 +4,7 @@ import api from '../api/client'
 import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
+import BoutonExport from '../components/ui/BoutonExport.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -122,6 +123,12 @@ async function soumettre() {
   <div>
     <PageHeader title="Depenses" subtitle="Toutes les sorties d'argent hors achat de marchandise. Elles sont deduites du bilan net.">
       <template #actions>
+        <BoutonExport
+          chemin="/exports/depenses.pdf"
+          :params="filtres"
+          libelle="Journal des depenses"
+          fichier="journal-des-depenses"
+        />
         <button type="button" class="primary" @click="ouvrirForm">
           <Icon name="plus" :size="15" /> Nouvelle depense
         </button>

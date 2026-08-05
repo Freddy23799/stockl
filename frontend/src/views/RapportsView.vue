@@ -4,6 +4,7 @@ import api, { assetUrl } from '../api/client'
 import { useModulesStore } from '../stores/modules'
 import { formatMontant, formatQuantite, formatDateCourt } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
+import BoutonExport from '../components/ui/BoutonExport.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import StatCard from '../components/ui/StatCard.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -253,7 +254,15 @@ onMounted(async () => {
       subtitle="Chiffre d'affaires, produits et vendeuses sur la periode choisie. La periode s'applique aux trois onglets."
     >
       <template #actions>
-        <button type="button" class="primary no-print" :disabled="!rapport" @click="imprimer">
+        <BoutonExport
+          class="no-print"
+          chemin="/exports/synthese.pdf"
+          :params="{ from: plage.from, to: plage.to, vendeuse_id: vendeuseFiltre }"
+          libelle="Rapport de synthese"
+          fichier="rapport-de-synthese"
+          variante="primary"
+        />
+        <button type="button" class="no-print" :disabled="!rapport" @click="imprimer">
           <Icon name="printer" :size="15" /> Imprimer
         </button>
       </template>
@@ -465,7 +474,7 @@ onMounted(async () => {
                     <tbody>
                       <tr v-for="p in performanceProduits.meilleures_ventes" :key="p.id">
                         <td>
-                          <img v-if="p.photo" :src="assetUrl(p.photo)" class="thumb" alt="" />
+                          <img v-if="p.photo" :src="assetUrl(p.photo, { taille: 'vignette' })" class="thumb" alt="" />
                           <div v-else class="thumb"><Icon name="image" :size="15" /></div>
                         </td>
                         <td class="td-strong">{{ p.nom }}</td>
@@ -509,7 +518,7 @@ onMounted(async () => {
                     <tbody>
                       <tr v-for="p in performanceProduits.faibles_ventes" :key="p.id">
                         <td>
-                          <img v-if="p.photo" :src="assetUrl(p.photo)" class="thumb" alt="" />
+                          <img v-if="p.photo" :src="assetUrl(p.photo, { taille: 'vignette' })" class="thumb" alt="" />
                           <div v-else class="thumb"><Icon name="image" :size="15" /></div>
                         </td>
                         <td class="td-strong">{{ p.nom }}</td>

@@ -1,9 +1,11 @@
 <script setup>
-import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
 import api from '../api/client'
 import { useToastStore } from '../stores/toasts'
+import { useAuthStore } from '../stores/auth'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
+import BoutonExport from '../components/ui/BoutonExport.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -13,6 +15,7 @@ import Pagination from '../components/ui/Pagination.vue'
 import Icon from '../components/ui/Icon.vue'
 
 const toasts = useToastStore()
+const auth = useAuthStore()
 
 const produits = ref([])
 const vendeuses = ref([])
@@ -100,6 +103,117 @@ watch(codeVendeuse, (val) => {
   }, 300)
 })
 
+/* --- Persistance du panier ------------------------------------------------
+   Le panier vit dans localStorage, pas cote serveur, et c'est volontaire : le
+   client fait tourner plusieurs postes de vente sur le MEME compte. Un panier
+   stocke en base serait partage entre les postes et deux caissieres se
+   marcheraient dessus a chaque article. localStorage est propre a un
+   navigateur : chaque poste garde sa saisie.
+   La cle porte l'identifiant de l'utilisateur pour qu'un panier ne survive pas
+   a un changement de compte sur le meme poste. */
+const clePanier = computed(() => (auth.user?.id ? `machibel.panier.${auth.user.id}` : null))
+
+// Tant que la restauration n'a pas eu lieu, on n'ecrit rien : sinon le premier
+// declenchement du watch ecraserait la saisie enregistree par un panier vide.
+let panierRestaure = false
+
+function enregistrerPanier() {
+  if (!panierRestaure || !clePanier.value) return
+  try {
+    const rienASauver =
+      !lignesPanier.value.length && typeVente.value === 'directe' && !codeVendeuse.value
+    if (rienASauver) {
+      localStorage.removeItem(clePanier.value)
+      return
+    }
+    localStorage.setItem(
+      clePanier.value,
+      JSON.stringify({
+        // Seuls l'identifiant et la quantite sont conserves : le nom et le prix
+        // sont relus dans le catalogue a la restauration, ils ont pu changer.
+        lignes: lignesPanier.value.map((l) => ({ produit_id: l.produit_id, quantite: l.quantite })),
+        typeVente: typeVente.value,
+        codeVendeuse: codeVendeuse.value,
+      })
+    )
+  } catch {
+    // Navigation privee, quota depasse, stockage desactive : on perd la reprise
+    // apres rafraichissement, jamais la vente en cours. La caisse continue.
+  }
+}
+
+function purgerPanier() {
+  try {
+    if (clePanier.value) localStorage.removeItem(clePanier.value)
+  } catch {
+    // Meme raison : un echec de purge ne doit rien interrompre.
+  }
+}
+
+// A appeler une fois le catalogue charge : le tri des lignes obsoletes en depend.
+function restaurerPanier() {
+  panierRestaure = true
+  if (!clePanier.value) return
+
+  let enregistre = null
+  try {
+    const brut = localStorage.getItem(clePanier.value)
+    enregistre = brut ? JSON.parse(brut) : null
+  } catch {
+    enregistre = null
+  }
+  if (!enregistre) return
+
+  const retenues = []
+  let retirees = 0
+  for (const l of Array.isArray(enregistre.lignes) ? enregistre.lignes : []) {
+    // /produits ne renvoie que les produits actifs : une ligne dont le produit
+    // est introuvable pointe sur un produit archive ou supprime depuis.
+    const produit = produits.value.find((p) => p.id === Number(l.produit_id))
+    const quantite = Number(l.quantite)
+    if (!produit || !Number.isFinite(quantite) || quantite <= 0) {
+      retirees += 1
+      continue
+    }
+    retenues.push({
+      produit_id: produit.id,
+      nom: produit.nom,
+      unite_stock: produit.unite_stock,
+      prix_vente: Number(produit.prix_vente),
+      quantite,
+    })
+  }
+
+  lignesPanier.value = retenues
+  if (enregistre.typeVente === 'directe' || enregistre.typeVente === 'vendeuse') {
+    typeVente.value = enregistre.typeVente
+  }
+  // Reaffecter le code relance la verification de la vendeuse : elle a pu etre
+  // desactivee entre-temps, on ne restaure pas un code valide par principe.
+  if (typeof enregistre.codeVendeuse === 'string') codeVendeuse.value = enregistre.codeVendeuse
+
+  if (retirees) {
+    toasts.info(
+      `${retirees} ligne(s) retiree(s) du panier restaure : ces produits ne sont plus au catalogue.`
+    )
+  }
+}
+
+watch([lignesPanier, typeVente, codeVendeuse], enregistrerPanier, { deep: true })
+
+/* --- Panier --------------------------------------------------------------- */
+
+// La ligne concernee s'eclaire une seconde apres l'ajout : sur un panier long,
+// c'est le seul moyen de voir ou l'article vient d'atterrir.
+const ligneSurlignee = ref(null)
+let timeoutSurlignage = null
+
+function surligner(produitId) {
+  clearTimeout(timeoutSurlignage)
+  ligneSurlignee.value = produitId
+  timeoutSurlignage = setTimeout(() => { ligneSurlignee.value = null }, 1000)
+}
+
 function choisirProduit(p) {
   produitSelectionne.value = p.id
   quantiteSelectionnee.value = 1
@@ -121,8 +235,16 @@ function ajouterLigne() {
       quantite: Number(quantiteSelectionnee.value),
     })
   }
+  surligner(produit.id)
   produitSelectionne.value = ''
   quantiteSelectionnee.value = 1
+}
+
+// Au doigt, deux boutons valent mieux qu'un champ numerique : on n'ouvre pas le
+// clavier et on ne vise pas les fleches de 8 px du champ natif.
+function ajusterQuantite(ligne, delta) {
+  const q = Number(ligne.quantite) + delta
+  ligne.quantite = Math.max(1, Math.min(q, stockDe(ligne.produit_id)))
 }
 
 function retirerLigne(index) {
@@ -138,6 +260,7 @@ function normaliserLigne(ligne) {
 
 function viderPanier() {
   lignesPanier.value = []
+  purgerPanier()
 }
 
 async function validerVente() {
@@ -157,6 +280,8 @@ async function validerVente() {
     vendeuseTrouvee.value = null
     produitSelectionne.value = ''
     rechercheProduit.value = ''
+    // La saisie est terminee : rien ne doit revenir au prochain rafraichissement.
+    purgerPanier()
     toasts.succes(`Vente enregistree — ${formatMontant(montant)}`)
     await chargerVentes()
     await chargerProduits()
@@ -246,9 +371,10 @@ async function ouvrirDetail(v) {
 onMounted(async () => {
   loading.value = true
   erreur.value = ''
+  let catalogueCharge = false
   try {
     await Promise.all([
-      chargerProduits(),
+      chargerProduits().then(() => { catalogueCharge = true }),
       chargerVentes(),
       api.get('/vendeuses').then((r) => { vendeuses.value = r.data }),
     ])
@@ -256,7 +382,16 @@ onMounted(async () => {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
     loading.value = false
+    // Sans catalogue on ne restaure PAS et on n'active pas la sauvegarde :
+    // toutes les lignes passeraient pour obsoletes et le panier enregistre
+    // serait detruit par un simple probleme de reseau.
+    if (catalogueCharge) restaurerPanier()
   }
+})
+
+onUnmounted(() => {
+  clearTimeout(timeoutRecherche)
+  clearTimeout(timeoutSurlignage)
 })
 </script>
 
@@ -265,7 +400,16 @@ onMounted(async () => {
     <PageHeader
       title="Ventes"
       subtitle="Encaissez a la caisse ou attribuez la vente a une vendeuse par son code : le stock est decremente immediatement."
-    />
+    >
+      <template #actions>
+        <BoutonExport
+          chemin="/exports/ventes.pdf"
+          :params="filtres"
+          libelle="Journal des ventes"
+          fichier="journal-des-ventes"
+        />
+      </template>
+    </PageHeader>
 
     <p v-if="erreur" class="alert alert-danger mb-4">
       <Icon name="alert" :size="16" /><span>{{ erreur }}</span>
@@ -440,13 +584,17 @@ onMounted(async () => {
               <thead>
                 <tr>
                   <th>Produit</th>
-                  <th style="width: 96px">Qte</th>
+                  <th style="width: 124px">Qte</th>
                   <th class="td-num">Sous-total</th>
                   <th style="width: 40px"></th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(l, i) in lignesPanier" :key="l.produit_id">
+                <tr
+                  v-for="(l, i) in lignesPanier"
+                  :key="l.produit_id"
+                  :class="{ 'is-ajoutee': ligneSurlignee === l.produit_id }"
+                >
                   <td>
                     <div class="td-strong">{{ l.nom }}</div>
                     <div class="small muted tnum">{{ formatMontant(l.prix_vente) }} / {{ l.unite_stock }}</div>
@@ -455,14 +603,30 @@ onMounted(async () => {
                     </span>
                   </td>
                   <td>
-                    <input
-                      v-model.number="l.quantite"
-                      type="number"
-                      min="1"
-                      step="1"
-                      class="qte-input"
-                      @change="normaliserLigne(l)"
-                    />
+                    <div class="qte-ctrl">
+                      <button
+                        type="button"
+                        class="btn-sm"
+                        :aria-label="`Retirer un ${l.unite_stock}`"
+                        :disabled="Number(l.quantite) <= 1"
+                        @click="ajusterQuantite(l, -1)"
+                      >−</button>
+                      <input
+                        v-model.number="l.quantite"
+                        type="number"
+                        min="1"
+                        step="1"
+                        class="qte-input"
+                        @change="normaliserLigne(l)"
+                      />
+                      <button
+                        type="button"
+                        class="btn-sm"
+                        :aria-label="`Ajouter un ${l.unite_stock}`"
+                        :disabled="Number(l.quantite) >= stockDe(l.produit_id)"
+                        @click="ajusterQuantite(l, 1)"
+                      >+</button>
+                    </div>
                   </td>
                   <td class="td-num td-strong tnum nowrap">{{ formatMontant(l.prix_vente * l.quantite) }}</td>
                   <td class="td-actions">
@@ -689,7 +853,30 @@ onMounted(async () => {
 .picker-name { flex: 1; min-width: 0; font-weight: 550; color: var(--text-h); overflow: hidden; text-overflow: ellipsis; }
 .picker-price { color: var(--text-muted); font-size: 12.5px; }
 
-.qte-input { padding: 5px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+/* Quantite : deux boutons encadrent le champ. Le champ reste editable pour les
+   grosses quantites, mais l'ajustement au doigt passe par les boutons. */
+.qte-ctrl { display: flex; align-items: center; gap: 3px; }
+.qte-ctrl > button {
+  padding: 0;
+  width: 32px;
+  min-width: 32px;
+  flex-shrink: 0;
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1;
+}
+.qte-input { padding: 5px 4px; text-align: center; font-variant-numeric: tabular-nums; min-width: 0; }
+
+/* Surlignage bref de la ligne qu'on vient d'ajouter : sur un panier long, on
+   ne sait pas ou l'article a atterri sans ce repere. */
+tbody tr.is-ajoutee { animation: ligne-ajoutee 1s ease-out; }
+@keyframes ligne-ajoutee {
+  from { background: var(--accent-soft); }
+  to { background: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  tbody tr.is-ajoutee { animation: none; background: var(--accent-soft); }
+}
 
 .code-input {
   font-family: var(--mono);
