@@ -41,6 +41,12 @@ services:
 
     # Installe les deux paquets et compile la PWA dans frontend/dist,
     # que le backend servira ensuite.
+    #
+    # ATTENTION : NODE_ENV=production ci-dessous s'applique AUSSI au build, et
+    # npm saute alors les devDependencies. Vite et son binaire natif rolldown en
+    # font partie : le build echoue avec "Cannot find module
+    # ../rolldown-binding.linux-x64-gnu.node". D'ou le `--include=dev` explicite
+    # dans le script `build` de la package.json racine - ne pas le retirer.
     buildCommand: npm run build
     startCommand: npm start
 

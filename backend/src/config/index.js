@@ -33,7 +33,9 @@ function obligatoire(nom, aide) {
   const valeur = (process.env[nom] || '').trim();
   if (!valeur) {
     throw new Error(
-      `${nom} est absent de backend/.env.\n` +
+      `${nom} n'est pas defini.\n` +
+      '  -> En local : ajoutez-le dans backend/.env\n' +
+      '  -> En ligne : ajoutez-le aux variables d\'environnement du service\n' +
       `  -> ${aide}`
     );
   }

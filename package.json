@@ -4,7 +4,7 @@
   "private": true,
   "description": "MACHIBEL - Systeme de gestion des ventes, stock et depenses pour parfumerie",
   "scripts": {
-    "build": "npm --prefix backend install && npm --prefix frontend install && npm --prefix frontend run build",
+    "build": "npm --prefix backend install --omit=dev && npm --prefix frontend install --include=dev && npm --prefix frontend run build",
     "start": "npm --prefix backend start",
     "migrate": "npm --prefix backend run migrate",
     "generate-secret": "npm --prefix backend run generate-secret",
