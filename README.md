@@ -142,12 +142,25 @@ de pointer Render sur ce depot.
 Tout le reste est fige dans `backend/src/config/index.js`. `PORT` est impose par
 Render et lu tel quel.
 
-### Point d'attention : les photos
+### Limites du plan gratuit
 
-Le disque d'un service Render est **ephemere**. Les fichiers de `backend/uploads/`
-(photos produits, logo) sont **perdus a chaque redeploiement** tant qu'un disque
-persistant n'est pas attache et monte sur ce chemin. La base, elle, est un service
-separe et n'est pas concernee.
+Le blueprint est configure en `plan: free` pour le service **et** pour la base.
+Trois consequences a connaitre avant de mettre en service :
+
+| Limite | Effet concret |
+|---|---|
+| Pas de disque persistant (reserve aux plans payants) | Les photos produits et le logo (`backend/uploads/`) sont **perdus a chaque redemarrage**, pas seulement aux deploiements. Les fiches produits restent, avec un chemin de photo qui ne pointe plus sur rien. |
+| Base gratuite a duree limitee (~30 jours) | **Toutes les donnees sont supprimees** a l'echeance si la base n'est pas passee en plan payant avant. |
+| Mise en veille apres ~15 min sans trafic | La premiere requete suivante peut prendre ~1 minute (demarrage a froid + migrations). |
+
+La base n'est pas concernee par la perte des fichiers : c'est un service separe.
+Seules les **images** disparaissent.
+
+Pour lever ces limites : passer le service en `plan: starter` et **decommenter le
+bloc `disk`** dans [render.yaml](render.yaml), puis passer la base en plan payant.
+
+En attendant, `npm run backup` (base + `uploads/`) est le seul filet : a lancer
+regulierement depuis un poste qui a acces a la base.
 
 ## Docker = dev uniquement
 

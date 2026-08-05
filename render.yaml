@@ -1,16 +1,41 @@
-# Blueprint de deploiement MACHIBEL.
+# Blueprint de deploiement MACHIBEL - plan GRATUIT.
 #
 # Runtime Node natif : pas de Docker ici. Le docker-compose.yml a la racine ne
 # sert QUE au developpement local (simuler PostgreSQL sur la machine de dev).
 #
 # Un seul service web : le processus Node sert l'API *et* la PWA compilee, donc
 # une seule origine, pas de reverse proxy, pas de CORS entre le front et l'API.
+#
+# -----------------------------------------------------------------------------
+# CE QUE LE PLAN GRATUIT IMPLIQUE - a lire avant de mettre en service
+#
+# 1. PAS DE DISQUE PERSISTANT. Les disques sont reserves aux plans payants.
+#    Le systeme de fichiers est remis a zero a chaque redemarrage, or le service
+#    gratuit se met en veille apres ~15 min sans trafic et redemarre a la
+#    requete suivante. Consequence : les photos produits et le logo ecrits dans
+#    backend/uploads DISPARAISSENT tres regulierement, pas seulement aux
+#    deploiements. La base de donnees, elle, est un service separe et n'est pas
+#    concernee : seules les images sont perdues (les fiches produits restent,
+#    avec un chemin de photo qui ne pointe plus sur rien).
+#
+# 2. BASE DE DONNEES GRATUITE A DUREE LIMITEE. Render supprime les bases du plan
+#    gratuit apres environ 30 jours. Passe ce delai, TOUTES LES DONNEES sont
+#    perdues si la base n'a pas ete passee en plan payant avant.
+#    -> Programmez `npm run backup` regulierement, ou passez la base en payant
+#       avant la fin du delai.
+#
+# 3. MISE EN VEILLE. Apres ~15 min d'inactivite, la premiere requete suivante
+#    peut prendre ~1 minute (demarrage a froid + migrations).
+#
+# Pour lever 1 et 3 : passer le service en `plan: starter` et remettre le bloc
+# `disk` (voir plus bas). Pour lever 2 : passer la base en plan payant.
+# -----------------------------------------------------------------------------
 
 services:
   - type: web
     name: machibel
     runtime: node
-    plan: starter
+    plan: free
     region: frankfurt
     branch: main
 
@@ -40,16 +65,18 @@ services:
       - key: NODE_ENV
         value: production
 
-    # Les photos produits et le logo sont ecrits sur le disque. Sans ce disque
-    # persistant, ils disparaissent a chaque redeploiement.
-    disk:
-      name: machibel-uploads
-      mountPath: /opt/render/project/src/backend/uploads
-      sizeGB: 1
+    # Le plan gratuit n'accepte pas de disque persistant. A REMETTRE en meme
+    # temps que le passage en `plan: starter`, sinon les photos produits et le
+    # logo sont perdus a chaque redemarrage :
+    #
+    # disk:
+    #   name: machibel-uploads
+    #   mountPath: /opt/render/project/src/backend/uploads
+    #   sizeGB: 1
 
 databases:
   - name: machibel-db
     databaseName: machibel
     user: machibel
-    plan: basic-256mb
+    plan: free
     region: frankfurt

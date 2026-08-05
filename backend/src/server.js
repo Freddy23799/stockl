@@ -9,15 +9,28 @@ try {
   process.exit(1);
 }
 
+const fs = require('fs');
+const path = require('path');
 const app = require('./app');
 const pool = require('./config/db');
 const { runMigrations } = require('./db/migrate');
 const { bootstrapAdmin } = require('./db/bootstrap-admin');
 
+// multer ecrit dans ces dossiers sans les creer. Ils sont versionnes, donc
+// presents apres un deploiement ; mais un disque persistant monte sur
+// backend/uploads masque le contenu du depot et arrive vide, ce qui ferait
+// echouer tout envoi de photo avec un ENOENT.
+function preparerDossiersUploads() {
+  for (const sousDossier of ['produits', 'logo']) {
+    fs.mkdirSync(path.join(config.uploadsDir, sousDossier), { recursive: true });
+  }
+}
+
 // Sequence de demarrage : schema a jour, puis compte admin, puis ecoute.
 // Tout est idempotent - un redemarrage ordinaire ne fait rien de plus que
 // verifier que les deux sont deja en place.
 async function demarrer() {
+  preparerDossiersUploads();
   await runMigrations();
   await bootstrapAdmin();
 
