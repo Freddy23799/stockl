@@ -1,6 +1,6 @@
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
-const { sortieStockPourVente, StockInsuffisantError } = require('../services/stock.service');
+const { sortieStockPourVente, StockInsuffisantError, IncoherenceStockError } = require('../services/stock.service');
 const { getPagination } = require('../utils/pagination');
 
 async function list(req, res) {
@@ -139,6 +139,15 @@ async function create(req, res) {
     await client.query('ROLLBACK');
     if (err instanceof StockInsuffisantError) {
       return res.status(409).json({ message: err.message, code: 'STOCK_INSUFFISANT', produit_id: err.produitId, disponible: err.disponible, demande: err.demande });
+    }
+    if (err instanceof IncoherenceStockError) {
+      return res.status(409).json({
+        message: err.message,
+        code: 'INCOHERENCE_STOCK',
+        produit_id: err.produitId,
+        stock_indique: err.stockProduit,
+        couvert_par_les_lots: err.sommeLots,
+      });
     }
     throw err;
   } finally {

@@ -103,10 +103,17 @@ async function changerMotDePasse(req, res) {
 
     await client.query('BEGIN');
     try {
-      await client.query('UPDATE utilisateurs SET password_hash = $1 WHERE id = $2', [
-        nouveauHash,
-        req.user.id,
-      ]);
+      // Le seuil coupe toutes les sessions ouvertes ailleurs (autre poste, autre
+      // navigateur). Tronque a la seconde : le jeton renvoye juste apres porte
+      // le meme `iat` et reste valable, donc l'utilisateur courant n'est pas
+      // deconnecte. Voir migration 006 et auth.middleware.js.
+      await client.query(
+        `UPDATE utilisateurs
+            SET password_hash = $1,
+                tokens_invalides_avant = date_trunc('second', now())
+          WHERE id = $2`,
+        [nouveauHash, req.user.id]
+      );
       // Le nouveau mot de passe n'est evidemment jamais journalise.
       await logAudit(client, {
         typeOperation: 'utilisateur_changement_mot_de_passe',
@@ -166,8 +173,14 @@ async function desactiver(req, res) {
       });
     }
 
+    // Coupe aussi les sessions deja ouvertes : sans ce seuil, un compte
+    // desactive resterait utilisable jusqu'a l'expiration de son jeton.
     const { rows } = await client.query(
-      'UPDATE utilisateurs SET actif = false WHERE id = $1 RETURNING id, nom, email, role, actif',
+      `UPDATE utilisateurs
+          SET actif = false,
+              tokens_invalides_avant = date_trunc('second', now())
+        WHERE id = $1
+      RETURNING id, prenom, nom, nom_utilisateur, role, actif`,
       [id]
     );
     if (rows.length === 0) {

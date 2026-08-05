@@ -17,11 +17,24 @@ async function getById(req, res) {
   res.json(rows[0]);
 }
 
+// 1 unite d'achat = facteur_conversion unites de stock. entreeStock divise par
+// cette valeur : a zero ou negative, le calcul du cout unitaire n'a plus de sens.
+function validerFacteurConversion(valeur) {
+  if (valeur === undefined || valeur === null || valeur === '') return null;
+  const nombre = Number(valeur);
+  if (!Number.isFinite(nombre) || nombre <= 0) {
+    return 'facteur_conversion doit etre un nombre strictement positif';
+  }
+  return null;
+}
+
 async function create(req, res) {
   const { nom, prix_vente, unite_stock, unite_achat, facteur_conversion, seuil_alerte } = req.body;
   if (!nom || prix_vente === undefined || !unite_stock) {
     return res.status(400).json({ message: 'nom, prix_vente et unite_stock sont requis' });
   }
+  const erreurConversion = validerFacteurConversion(facteur_conversion);
+  if (erreurConversion) return res.status(400).json({ message: erreurConversion });
 
   const client = await pool.connect();
   try {
@@ -52,6 +65,9 @@ async function create(req, res) {
 async function update(req, res) {
   const { id } = req.params;
   const { nom, prix_vente, unite_stock, unite_achat, facteur_conversion, seuil_alerte } = req.body;
+
+  const erreurConversion = validerFacteurConversion(facteur_conversion);
+  if (erreurConversion) return res.status(400).json({ message: erreurConversion });
 
   const client = await pool.connect();
   try {

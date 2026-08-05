@@ -10,6 +10,27 @@ class StockInsuffisantError extends Error {
   }
 }
 
+// Le stock affiche du produit et la somme de ses lots doivent toujours coincider
+// (c'est l'invariant verifie par `npm run check-integrity`). S'ils divergent, on
+// refuse la vente : la valoriser quand meme produirait un cout d'acquisition
+// sous-estime, donc une marge fausse dans les rapports, sans aucun signal.
+class IncoherenceStockError extends Error {
+  constructor(produitId, stockProduit, sommeLots) {
+    super(
+      `Incoherence de stock sur le produit ${produitId} : le stock indique ${stockProduit} `
+      + `mais les lots n'en couvrent que ${sommeLots}. Lancez "npm run check-integrity".`
+    );
+    this.name = 'IncoherenceStockError';
+    this.produitId = produitId;
+    this.stockProduit = stockProduit;
+    this.sommeLots = sommeLots;
+  }
+}
+
+// Les quantites sont des NUMERIC(12,2) : en deca de ce seuil, l'ecart n'est que
+// du bruit d'arrondi en virgule flottante, pas une vraie divergence.
+const TOLERANCE_ARRONDI = 0.005;
+
 async function getMethodeValorisation(client) {
   const { rows } = await client.query('SELECT methode_valorisation FROM parametres WHERE id = 1');
   return rows[0].methode_valorisation;
@@ -33,8 +54,26 @@ async function entreeStock(client, { produitId, quantiteAchat, coutAchatTotal, a
     }
   }
 
-  const quantiteRef = Number(quantiteAchat) * Number(produit.facteur_conversion);
+  // facteur_conversion nul ou negatif donnerait une quantite de reference nulle,
+  // donc un cout unitaire Infinity. PostgreSQL le rejette ensuite avec un
+  // "numeric field overflow" incomprehensible pour l'utilisateur : on tranche ici.
+  const facteur = Number(produit.facteur_conversion);
+  if (!Number.isFinite(facteur) || facteur <= 0) {
+    throw new Error(
+      `Le produit ${produitId} a un facteur de conversion invalide (${produit.facteur_conversion}). `
+      + 'Corrigez la fiche produit avant de saisir une entree de stock.'
+    );
+  }
+
+  const quantiteRef = Number(quantiteAchat) * facteur;
+  if (!Number.isFinite(quantiteRef) || quantiteRef <= 0) {
+    throw new Error('La quantite achetee doit etre strictement positive');
+  }
+
   const coutUnitaireRef = Number(coutAchatTotal) / quantiteRef;
+  if (!Number.isFinite(coutUnitaireRef)) {
+    throw new Error('Le cout d\'achat total est invalide');
+  }
 
   await client.query(
     `INSERT INTO lots_stock (produit_id, quantite_initiale, quantite_restante, cout_unitaire, fournisseur_id)
@@ -108,6 +147,18 @@ async function sortieStockPourVente(client, { produitId, quantite, venteId, aute
     await client.query('UPDATE lots_stock SET quantite_restante = quantite_restante - $1 WHERE id = $2', [pris, lot.id]);
   }
 
+  // Les lots n'ont pas couvert la quantite : produits.quantite_stock et
+  // lots_stock ont diverge. Sans ce controle, le cout FIFO serait calcule sur
+  // la seule partie couverte puis divise par la quantite totale - soit un cout
+  // d'acquisition trop bas et une marge surevaluee, en silence.
+  if (restant > TOLERANCE_ARRONDI) {
+    throw new IncoherenceStockError(
+      produitId,
+      stockDisponible,
+      quantiteDemandee - restant
+    );
+  }
+
   const coutUnitaireApplique = methode === 'FIFO'
     ? coutTotalFifo / quantiteDemandee
     : Number(produit.cout_moyen_pondere);
@@ -126,4 +177,10 @@ async function sortieStockPourVente(client, { produitId, quantite, venteId, aute
   return { coutUnitaireApplique };
 }
 
-module.exports = { entreeStock, sortieStockPourVente, getMethodeValorisation, StockInsuffisantError };
+module.exports = {
+  entreeStock,
+  sortieStockPourVente,
+  getMethodeValorisation,
+  StockInsuffisantError,
+  IncoherenceStockError,
+};

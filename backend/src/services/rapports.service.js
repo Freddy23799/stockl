@@ -163,8 +163,15 @@ async function computePerformanceProduits({ from, to, limite = 5 }) {
 
   async function ventesParProduit(debut, fin) {
     const { rows } = await pool.query(
-      `SELECT p.id, p.nom, p.photo, COALESCE(SUM(vl.quantite), 0) AS quantite_vendue,
-              COALESCE(SUM(vl.quantite * vl.prix_vente_snapshot), 0) AS montant
+      // Le FILTER est indispensable : la condition de date porte sur la jointure
+      // avec `ventes`, mais la somme porte sur `ventes_lignes`. Sans lui, une
+      // ligne hors periode reste dans le resultat avec v.id a NULL et sa
+      // quantite est quand meme additionnee - la periode n'aurait aucun effet.
+      // Le LEFT JOIN est conserve pour garder les produits jamais vendus, dont
+      // "faibles_ventes" a besoin.
+      `SELECT p.id, p.nom, p.photo,
+              COALESCE(SUM(vl.quantite) FILTER (WHERE v.id IS NOT NULL), 0) AS quantite_vendue,
+              COALESCE(SUM(vl.quantite * vl.prix_vente_snapshot) FILTER (WHERE v.id IS NOT NULL), 0) AS montant
        FROM produits p
        LEFT JOIN ventes_lignes vl ON vl.produit_id = p.id
        LEFT JOIN ventes v ON v.id = vl.vente_id AND v.date >= $1 AND v.date <= $2
