@@ -46,7 +46,32 @@ const etatFiltre = computed(() => {
 
 /* --- Chargement --------------------------------------------------------- */
 
-const filtres = reactive({ produit_id: '', type: '', from: '', to: '' })
+const filtres = reactive({ produit_id: '', type: '', motif: '', from: '', to: '' })
+
+// Le motif dit ce qui s'est reellement passe ; "Entree"/"Sortie" ne distingue
+// pas un ravitaillement d'un retour client, ni une vente d'une casse.
+const LIBELLES_MOTIF = {
+  ravitaillement: 'Ravitaillement',
+  vente: 'Vente',
+  inventaire: 'Inventaire',
+  perte: 'Perte',
+  casse: 'Casse',
+  vol: 'Vol',
+  retour_client: 'Retour client',
+  correction: 'Correction',
+}
+
+function libelleMotif(mouvement) {
+  return LIBELLES_MOTIF[mouvement.motif] || (mouvement.type === 'entree' ? 'Entree' : 'Sortie')
+}
+
+// Une perte se signale en rouge : c'est de l'argent qui sort sans contrepartie,
+// et cela ne doit pas se confondre visuellement avec une vente.
+function badgeMotif(mouvement) {
+  if (['perte', 'casse', 'vol'].includes(mouvement.motif)) return 'danger'
+  if (mouvement.motif === 'inventaire' || mouvement.motif === 'correction') return 'info'
+  return mouvement.type === 'entree' ? 'success' : 'warning'
+}
 const page = ref(1)
 const pageSize = 20
 const total = ref(0)
@@ -62,6 +87,7 @@ async function chargerMouvements() {
     const params = { page: page.value, pageSize }
     if (filtres.produit_id) params.produit_id = filtres.produit_id
     if (filtres.type) params.type = filtres.type
+    if (filtres.motif) params.motif = filtres.motif
     if (filtres.from) params.from = filtres.from
     if (filtres.to) params.to = filtres.to
     const { data } = await api.get('/stock/mouvements', { params })
@@ -78,12 +104,12 @@ function filtrerMouvements() {
 }
 
 function reinitialiserFiltres() {
-  Object.assign(filtres, { produit_id: '', type: '', from: '', to: '' })
+  Object.assign(filtres, { produit_id: '', type: '', motif: '', from: '', to: '' })
   filtrerMouvements()
 }
 
 const filtresActifs = computed(() =>
-  Boolean(filtres.produit_id || filtres.type || filtres.from || filtres.to)
+  Boolean(filtres.produit_id || filtres.type || filtres.motif || filtres.from || filtres.to)
 )
 
 function changerPage(nouvellePage) {
@@ -146,6 +172,81 @@ function ouvrirEntree(produitId = '') {
   entreeVisible.value = true
 }
 
+/* --- Ajustement de stock ------------------------------------------------ */
+
+// Le stock ne pouvait baisser que par une vente. Une boutique perd pourtant de
+// la marchandise autrement : casse, vol, erreur de comptage. Sans cet ecran, la
+// seule facon de corriger un ecart etait d'enregistrer une fausse vente, ce qui
+// gonflait le chiffre d'affaires.
+const MOTIFS = [
+  { valeur: 'inventaire', label: 'Inventaire physique', aide: "Comptage des rayons : ajuste le stock sur ce qui a ete compte." },
+  { valeur: 'casse', label: 'Casse', aide: 'Flacon brise, emballage abime, produit inutilisable.' },
+  { valeur: 'perte', label: 'Perte', aide: 'Marchandise egaree ou perimee.' },
+  { valeur: 'vol', label: 'Vol', aide: 'Disparition constatee.' },
+  { valeur: 'retour_client', label: 'Retour client', aide: 'Un produit vendu revient en stock.' },
+  { valeur: 'correction', label: 'Correction de saisie', aide: 'Erreur lors d\'une entree precedente.' },
+]
+
+const ajustementVisible = ref(false)
+const ajustement = reactive({ produit_id: '', quantite_reelle: '', motif: 'inventaire', note: '' })
+const ajustementErreur = ref('')
+const ajustementSoumission = ref(false)
+
+const produitAjuste = computed(() =>
+  etatStock.value.find((p) => p.id === Number(ajustement.produit_id)) || null
+)
+
+const motifChoisi = computed(() => MOTIFS.find((m) => m.valeur === ajustement.motif) || null)
+
+// L'ecart est affiche avant validation : c'est le seul moyen de se rendre compte
+// qu'on s'apprete a retirer 300 unites a cause d'une faute de frappe.
+const apercuAjustement = computed(() => {
+  const p = produitAjuste.value
+  if (!p || ajustement.quantite_reelle === '') return null
+  const cible = Number(ajustement.quantite_reelle)
+  if (!Number.isFinite(cible) || cible < 0) return null
+  const actuel = Number(p.quantite_stock)
+  const ecart = cible - actuel
+  return {
+    actuel,
+    cible,
+    ecart,
+    unite: p.unite_stock,
+    valeur: Math.abs(ecart) * Number(p.cout_moyen_pondere),
+  }
+})
+
+function ouvrirAjustement(produitId = '') {
+  Object.assign(ajustement, { produit_id: produitId, quantite_reelle: '', motif: 'inventaire', note: '' })
+  ajustementErreur.value = ''
+  ajustementVisible.value = true
+}
+
+async function soumettreAjustement() {
+  ajustementErreur.value = ''
+  ajustementSoumission.value = true
+  try {
+    const { data } = await api.post('/stock/ajustements', {
+      produit_id: Number(ajustement.produit_id),
+      quantite_reelle: Number(ajustement.quantite_reelle),
+      motif: ajustement.motif,
+      note: ajustement.note || null,
+    })
+    ajustementVisible.value = false
+    if (data.ecart === 0) {
+      toasts.succes(data.message)
+    } else {
+      const sens = data.ecart > 0 ? 'ajoutee(s)' : 'retiree(s)'
+      toasts.succes(`${formatQuantite(Math.abs(data.ecart))} unite(s) ${sens} — ${produitAjuste.value?.nom}`)
+    }
+    await Promise.all([chargerEtat(), chargerMouvements(), chargerReferences()])
+  } catch (err) {
+    ajustementErreur.value = err.response?.data?.message || "Erreur lors de l'ajustement"
+  } finally {
+    ajustementSoumission.value = false
+  }
+}
+
 async function soumettreEntree() {
   entreeErreur.value = ''
   entreeSoumission.value = true
@@ -186,6 +287,9 @@ async function soumettreEntree() {
           libelle="Mouvements de stock"
           fichier="mouvements-de-stock"
         />
+        <button type="button" @click="ouvrirAjustement()">
+          <Icon name="clipboard" :size="15" /> Ajuster / Inventaire
+        </button>
         <button type="button" class="primary" @click="ouvrirEntree()">
           <Icon name="boxIn" :size="15" /> Entree de stock
         </button>
@@ -324,6 +428,20 @@ async function soumettreEntree() {
               <option value="sortie">Sorties</option>
             </select>
           </div>
+          <div class="field" style="min-width: 160px">
+            <label>Motif</label>
+            <select v-model="filtres.motif" @change="filtrerMouvements">
+              <option value="">Tous</option>
+              <!-- "Pertes" regroupe casse, perte et vol : c'est la question
+                   qu'on se pose reellement, pas trois questions separees. -->
+              <option value="pertes">Pertes (casse, vol...)</option>
+              <option value="ravitaillement">Ravitaillement</option>
+              <option value="vente">Vente</option>
+              <option value="inventaire">Inventaire</option>
+              <option value="retour_client">Retour client</option>
+              <option value="correction">Correction</option>
+            </select>
+          </div>
           <div class="field">
             <label>Du</label>
             <input v-model="filtres.from" type="date" @change="filtrerMouvements" />
@@ -366,10 +484,11 @@ async function soumettreEntree() {
               <tr v-for="m in mouvements" :key="m.id">
                 <td data-label="Produit" class="td-titre td-strong">{{ m.produit_nom }}</td>
                 <td data-label="Type">
-                  <span class="badge" :class="m.type === 'entree' ? 'success' : 'warning'">
+                  <span class="badge" :class="badgeMotif(m)">
                     <Icon :name="m.type === 'entree' ? 'boxIn' : 'boxOut'" :size="12" />
-                    {{ m.type === 'entree' ? 'Entree' : 'Sortie' }}
+                    {{ libelleMotif(m) }}
                   </span>
+                  <div v-if="m.note" class="small muted mt-2">{{ m.note }}</div>
                 </td>
                 <td data-label="Quantite" class="td-num tnum td-strong">{{ formatQuantite(m.quantite) }}</td>
                 <td data-label="Cout unitaire" class="td-num tnum muted">{{ formatMontant(m.cout_unitaire) }}</td>
@@ -385,6 +504,79 @@ async function soumettreEntree() {
         <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
       </div>
     </div>
+
+    <!-- ============ Modale ajustement / inventaire ============ -->
+    <Modal v-if="ajustementVisible" title="Ajuster le stock" @close="ajustementVisible = false">
+      <form id="form-ajustement" @submit.prevent="soumettreAjustement">
+        <p class="small muted mb-3">
+          Corrigez le stock quand la realite ne correspond plus a ce qui est enregistre :
+          comptage des rayons, casse, vol, retour. Le mouvement est trace, mais il n'entre
+          jamais dans le chiffre d'affaires.
+        </p>
+
+        <div class="field">
+          <label>Produit</label>
+          <select v-model="ajustement.produit_id" required>
+            <option value="" disabled>Choisir un produit</option>
+            <option v-for="p in etatStock" :key="p.id" :value="p.id">
+              {{ p.nom }} — {{ formatQuantite(p.quantite_stock) }} {{ p.unite_stock }} en stock
+            </option>
+          </select>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Motif</label>
+            <select v-model="ajustement.motif" required>
+              <option v-for="m in MOTIFS" :key="m.valeur" :value="m.valeur">{{ m.label }}</option>
+            </select>
+            <span v-if="motifChoisi" class="field-hint">{{ motifChoisi.aide }}</span>
+          </div>
+          <div class="field">
+            <label>
+              Quantite reellement presente
+              <span v-if="produitAjuste" class="muted">({{ produitAjuste.unite_stock }})</span>
+            </label>
+            <!-- On demande la quantite COMPTEE, pas un ecart : c'est ainsi qu'on
+                 travaille en rayon, et cela evite une soustraction de tete qui
+                 est justement la source d'erreur qu'on veut corriger. -->
+            <input v-model="ajustement.quantite_reelle" type="number" min="0" step="0.01" required />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Note <span class="muted">(optionnel)</span></label>
+          <input v-model="ajustement.note" type="text" maxlength="300" placeholder="Ex. deux flacons casses a la livraison" />
+        </div>
+
+        <div v-if="apercuAjustement" class="alert" :class="apercuAjustement.ecart === 0 ? 'alert-info' : (apercuAjustement.ecart < 0 ? 'alert-warning' : 'alert-info')">
+          <Icon :name="apercuAjustement.ecart === 0 ? 'check' : 'warning'" :size="16" />
+          <span v-if="apercuAjustement.ecart === 0">
+            Le stock compte correspond au stock enregistre. Aucun mouvement ne sera cree.
+          </span>
+          <span v-else>
+            Le stock passe de <strong>{{ formatQuantite(apercuAjustement.actuel) }}</strong>
+            a <strong>{{ formatQuantite(apercuAjustement.cible) }} {{ apercuAjustement.unite }}</strong>,
+            soit <strong>{{ apercuAjustement.ecart > 0 ? '+' : '' }}{{ formatQuantite(apercuAjustement.ecart) }}</strong>.
+            <template v-if="apercuAjustement.ecart < 0">
+              Valeur de la perte : <strong>{{ formatMontant(apercuAjustement.valeur) }}</strong>.
+            </template>
+          </span>
+        </div>
+
+        <p v-if="ajustementErreur" class="alert alert-danger">
+          <Icon name="alert" :size="16" /><span>{{ ajustementErreur }}</span>
+        </p>
+      </form>
+
+      <template #footer>
+        <button type="button" @click="ajustementVisible = false">Annuler</button>
+        <button type="submit" form="form-ajustement" class="primary" :disabled="ajustementSoumission">
+          <span v-if="ajustementSoumission" class="spinner" />
+          Enregistrer l'ajustement
+        </button>
+      </template>
+    </Modal>
 
     <!-- ============ Modale entree de stock ============ -->
     <Modal v-if="entreeVisible" title="Entree de stock" @close="entreeVisible = false">

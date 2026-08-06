@@ -95,8 +95,8 @@ async function entreeStock(client, { produitId, quantiteAchat, coutAchatTotal, a
   );
 
   const { rows: mouvementRows } = await client.query(
-    `INSERT INTO mouvements_stock (produit_id, type, quantite, cout_unitaire, auteur_id, fournisseur_id)
-     VALUES ($1, 'entree', $2, $3, $4, $5) RETURNING *`,
+    `INSERT INTO mouvements_stock (produit_id, type, quantite, cout_unitaire, auteur_id, fournisseur_id, motif)
+     VALUES ($1, 'entree', $2, $3, $4, $5, 'ravitaillement') RETURNING *`,
     [produitId, quantiteRef, coutUnitaireRef, auteurId, fournisseurId]
   );
 
@@ -169,18 +169,137 @@ async function sortieStockPourVente(client, { produitId, quantite, venteId, aute
   );
 
   await client.query(
-    `INSERT INTO mouvements_stock (produit_id, type, quantite, cout_unitaire, vente_id, auteur_id)
-     VALUES ($1, 'sortie', $2, $3, $4, $5)`,
+    `INSERT INTO mouvements_stock (produit_id, type, quantite, cout_unitaire, vente_id, auteur_id, motif)
+     VALUES ($1, 'sortie', $2, $3, $4, $5, 'vente')`,
     [produitId, quantiteDemandee, coutUnitaireApplique, venteId, auteurId]
   );
 
   return { coutUnitaireApplique };
 }
 
+/**
+ * Ajustement du stock hors vente : inventaire physique, perte, casse, vol,
+ * retour client, correction de saisie.
+ *
+ * L'appelant fournit la quantite REELLEMENT comptee, pas un ecart. C'est ainsi
+ * qu'on travaille en boutique : on compte ce qu'il y a dans le rayon. Demander
+ * un ecart obligerait a faire la soustraction de tete, ce qui est precisement
+ * la source d'erreur qu'on cherche a corriger.
+ *
+ * Les lots sont maintenus en coherence avec le stock, sans quoi la valorisation
+ * FIFO deviendrait fausse au prochain passage en caisse.
+ */
+const MOTIFS_AJUSTEMENT = ['inventaire', 'perte', 'casse', 'vol', 'retour_client', 'correction'];
+
+class MotifInvalideError extends Error {
+  constructor(motif) {
+    super(`Motif d'ajustement invalide : "${motif}". Valeurs acceptees : ${MOTIFS_AJUSTEMENT.join(', ')}.`);
+    this.name = 'MotifInvalideError';
+  }
+}
+
+async function ajusterStock(client, { produitId, quantiteReelle, motif, note = null, auteurId }) {
+  if (!MOTIFS_AJUSTEMENT.includes(motif)) throw new MotifInvalideError(motif);
+
+  const quantiteCible = Number(quantiteReelle);
+  if (!Number.isFinite(quantiteCible) || quantiteCible < 0) {
+    throw new Error('La quantite comptee doit etre un nombre positif ou nul');
+  }
+
+  const { rows: produitRows } = await client.query('SELECT * FROM produits WHERE id = $1 FOR UPDATE', [produitId]);
+  const produit = produitRows[0];
+  if (!produit) throw new Error('Produit introuvable');
+  if (!produit.actif) throw new Error('Ce produit est archive : il ne peut plus etre ajuste');
+
+  const stockAvant = Number(produit.quantite_stock);
+  const ecart = quantiteCible - stockAvant;
+
+  // Compter et retrouver exactement le stock theorique est le cas le plus
+  // frequent d'un inventaire. Ce n'est pas une erreur, et cela ne merite pas
+  // une ligne de mouvement : on le signale a l'appelant, sans rien ecrire.
+  if (Math.abs(ecart) <= TOLERANCE_ARRONDI) {
+    return { ecart: 0, produit, mouvement: null };
+  }
+
+  const cmp = Number(produit.cout_moyen_pondere);
+  let coutUnitaire = cmp;
+
+  if (ecart < 0) {
+    // Sortie : on consomme les lots au plus ancien, comme une vente. Le cout
+    // retenu est celui des lots reellement consommes, ce qui donne la valeur
+    // exacte de la perte.
+    const manquant = -ecart;
+    const { rows: lots } = await client.query(
+      `SELECT * FROM lots_stock WHERE produit_id = $1 AND quantite_restante > 0
+       ORDER BY date_entree ASC FOR UPDATE`,
+      [produitId]
+    );
+    let restant = manquant;
+    let coutTotal = 0;
+    for (const lot of lots) {
+      if (restant <= 0) break;
+      const pris = Math.min(restant, Number(lot.quantite_restante));
+      coutTotal += pris * Number(lot.cout_unitaire);
+      restant -= pris;
+      await client.query('UPDATE lots_stock SET quantite_restante = quantite_restante - $1 WHERE id = $2', [pris, lot.id]);
+    }
+    // Les lots ne couvrent pas la sortie : le stock et les lots avaient deja
+    // diverge. On refuse plutot que d'aggraver l'ecart en silence - c'est
+    // exactement ce que `npm run check-integrity` sert a diagnostiquer.
+    if (restant > TOLERANCE_ARRONDI) {
+      throw new IncoherenceStockError(produitId, stockAvant, manquant - restant);
+    }
+    coutUnitaire = coutTotal / manquant;
+  } else {
+    // Entree : la marchandise retrouvee n'a pas de facture. On la valorise au
+    // cout moyen actuel, seule valeur defendable ; a defaut (premier
+    // approvisionnement jamais valorise) elle entre a zero.
+    await client.query(
+      `INSERT INTO lots_stock (produit_id, quantite_initiale, quantite_restante, cout_unitaire)
+       VALUES ($1, $2, $2, $3)`,
+      [produitId, ecart, cmp]
+    );
+    coutUnitaire = cmp;
+  }
+
+  // Le cout moyen n'est pas recalcule : un ajustement ne change pas le prix
+  // auquel la marchandise a ete achetee, seulement la quantite detenue.
+  const { rows: majRows } = await client.query(
+    'UPDATE produits SET quantite_stock = $1, updated_at = now() WHERE id = $2 RETURNING *',
+    [quantiteCible, produitId]
+  );
+
+  const { rows: mouvementRows } = await client.query(
+    `INSERT INTO mouvements_stock (produit_id, type, quantite, cout_unitaire, auteur_id, motif, note)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [produitId, ecart > 0 ? 'entree' : 'sortie', Math.abs(ecart), coutUnitaire, auteurId, motif, note]
+  );
+
+  await logAudit(client, {
+    typeOperation: 'ajustement_stock',
+    entiteId: produitId,
+    utilisateurId: auteurId,
+    details: {
+      produit_nom: produit.nom,
+      motif,
+      note,
+      ecart,
+      valeur_ecart: Math.abs(ecart) * coutUnitaire,
+    },
+    avant: { quantite_stock: stockAvant, unite_stock: produit.unite_stock },
+    apres: { quantite_stock: quantiteCible, unite_stock: produit.unite_stock },
+  });
+
+  return { ecart, produit: majRows[0], mouvement: mouvementRows[0] };
+}
+
 module.exports = {
   entreeStock,
   sortieStockPourVente,
+  ajusterStock,
   getMethodeValorisation,
+  MOTIFS_AJUSTEMENT,
   StockInsuffisantError,
   IncoherenceStockError,
+  MotifInvalideError,
 };

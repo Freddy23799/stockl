@@ -11,6 +11,8 @@ router.get('/', vendeusesController.list);
 router.get('/code/:code', vendeusesController.getByCode);
 router.post('/', vendeusesController.create);
 router.put('/:id', vendeusesController.update);
+// Remplace un code qui a circule, sans toucher a l'historique des ventes
+router.patch('/:id/regenerer-code', vendeusesController.regenererCode);
 router.patch('/:id/activer', vendeusesController.activer);
 router.patch('/:id/desactiver', vendeusesController.desactiver);
 

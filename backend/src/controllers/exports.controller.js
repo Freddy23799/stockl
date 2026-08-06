@@ -625,6 +625,8 @@ const LIBELLES_AUDIT = {
   admin_initial_cree: 'Compte administrateur initial',
   vente_creation: 'Vente enregistrée',
   entree_stock: 'Entrée de stock',
+  ajustement_stock: 'Ajustement de stock',
+  vendeuse_code_regenere: 'Code vendeuse régénéré',
   depense_creation: 'Dépense enregistrée',
   fournisseur_creation: 'Fournisseur créé',
   fournisseur_activation: 'Fournisseur réactivé',

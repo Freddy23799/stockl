@@ -7,7 +7,14 @@ const config = require('../config');
 
 const TAILLE_MAX = 5 * 1024 * 1024;
 const FORMATS_IMAGE = ['.jpg', '.jpeg', '.png', '.webp'];
-const FORMATS_LOGO = [...FORMATS_IMAGE, '.svg'];
+
+// Le logo est plus contraint que les photos produits, et volontairement : il
+// doit s'imprimer en entete des rapports PDF, or le format PDF n'embarque que du
+// PNG et du JPEG. Accepter du SVG ou du WebP produisait un logo correct a
+// l'ecran mais absent de tous les documents, sans le moindre avertissement.
+// Mieux vaut refuser a l'envoi, avec un message clair, qu'echouer en silence a
+// l'impression.
+const FORMATS_LOGO = ['.jpg', '.jpeg', '.png'];
 
 class FormatFichierError extends Error {
   constructor(formats) {

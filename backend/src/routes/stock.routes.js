@@ -10,7 +10,10 @@ router.get('/alertes', requireAuth, stockController.alertes);
 // Entree de stock (ravitaillement) : quantite + cout d'achat (unite d'achat -> conversion)
 router.post('/entrees', requireAuth, requireRole('admin'), stockController.creerEntree);
 
-// Historique des mouvements (entrees/sorties), filtrable par produit/type/periode
+// Ajustement hors vente : inventaire physique, perte, casse, vol, retour client
+router.post('/ajustements', requireAuth, requireRole('admin'), stockController.ajuster);
+
+// Historique des mouvements (entrees/sorties), filtrable par produit/type/motif/periode
 router.get('/mouvements', requireAuth, requireRole('admin'), stockController.mouvements);
 
 module.exports = router;

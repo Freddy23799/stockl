@@ -108,4 +108,54 @@ function setActif(actif) {
   };
 }
 
-module.exports = { list, getByCode, create, update, activer: setActif(true), desactiver: setActif(false) };
+// Regeneration du code d'une vendeuse.
+//
+// Le code a six chiffres est un secret partage : il suffit a attribuer une vente
+// a quelqu'un. S'il circule (note oubliee sur le comptoir, depart de la
+// personne), il faut pouvoir le remplacer sans supprimer la fiche, sinon tout
+// l'historique de ses ventes serait perdu.
+//
+// L'ancien code n'est pas journalise : le mettre au journal reviendrait a le
+// laisser lisible par la personne meme a qui on vient de le retirer.
+async function regenererCode(req, res) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: existanteRows } = await client.query(
+      'SELECT * FROM vendeuses WHERE id = $1 FOR UPDATE',
+      [req.params.id]
+    );
+    const existante = existanteRows[0];
+    if (!existante) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Vendeuse introuvable' });
+    }
+
+    const nouveauCode = await genererCodeUnique(client);
+    const { rows } = await client.query(
+      'UPDATE vendeuses SET code = $1 WHERE id = $2 RETURNING *',
+      [nouveauCode, req.params.id]
+    );
+
+    await logAudit(client, {
+      typeOperation: 'vendeuse_code_regenere',
+      entiteId: Number(req.params.id),
+      utilisateurId: req.user.id,
+      details: { vendeuse_nom: existante.nom },
+    });
+
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+module.exports = {
+  list, getByCode, create, update, regenererCode,
+  activer: setActif(true), desactiver: setActif(false),
+};

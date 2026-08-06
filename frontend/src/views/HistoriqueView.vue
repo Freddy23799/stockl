@@ -1,7 +1,12 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
 import api from '../api/client'
-import { formatDate, formatMontant, formatQuantite } from '../utils/format'
+import { formatDate } from '../utils/format'
+import {
+  OPERATIONS, decrire, changements, resumeLisible, consequence,
+  partiesDetails, dateEnToutesLettres, tempsRelatif,
+  aEtatAnterieur, valeursEnregistrees,
+} from '../utils/audit'
 import PageHeader from '../components/ui/PageHeader.vue'
 import BoutonExport from '../components/ui/BoutonExport.vue'
 import Modal from '../components/ui/Modal.vue'
@@ -20,77 +25,7 @@ const page = ref(1)
 const pageSize = 20
 const total = ref(0)
 
-// Le journal stocke des identifiants techniques ; l'ecran doit parler francais.
-// Chaque entree : libelle lisible, tonalite de badge, icone de famille.
-const OPERATIONS = {
-  produit_creation: { libelle: 'Produit cree', ton: 'success', icone: 'package' },
-  produit_modification: { libelle: 'Produit modifie', ton: 'warning', icone: 'edit' },
-  produit_changement_prix: { libelle: 'Prix de vente change', ton: 'warning', icone: 'tag' },
-  produit_desactivation: { libelle: 'Produit archive', ton: 'danger', icone: 'inbox' },
-  vendeuse_creation: { libelle: 'Vendeuse creee', ton: 'success', icone: 'userPlus' },
-  vendeuse_activation: { libelle: 'Vendeuse reactivee', ton: 'success', icone: 'toggle' },
-  vendeuse_desactivation: { libelle: 'Vendeuse desactivee', ton: 'danger', icone: 'toggle' },
-  utilisateur_creation: { libelle: 'Utilisateur cree', ton: 'success', icone: 'userPlus' },
-  utilisateur_desactivation: { libelle: 'Utilisateur desactive', ton: 'danger', icone: 'toggle' },
-  utilisateur_changement_mot_de_passe: { libelle: 'Mot de passe change', ton: 'warning', icone: 'key' },
-  admin_initial_cree: { libelle: 'Compte administrateur initial', ton: 'info', icone: 'shield' },
-  vente_creation: { libelle: 'Vente enregistree', ton: 'success', icone: 'cart' },
-  entree_stock: { libelle: 'Entree de stock', ton: 'success', icone: 'boxIn' },
-  depense_creation: { libelle: 'Depense enregistree', ton: 'success', icone: 'wallet' },
-  fournisseur_creation: { libelle: 'Fournisseur cree', ton: 'success', icone: 'truck' },
-  fournisseur_activation: { libelle: 'Fournisseur reactive', ton: 'success', icone: 'toggle' },
-  fournisseur_desactivation: { libelle: 'Fournisseur desactive', ton: 'danger', icone: 'toggle' },
-  parametres_modification: { libelle: 'Parametres modifies', ton: 'warning', icone: 'settings' },
-  parametres_logo_modifie: { libelle: 'Logo modifie', ton: 'warning', icone: 'image' },
-}
-
 const typesConnus = Object.keys(OPERATIONS)
-
-// Un type inconnu (ajoute cote serveur apres ce build) reste lisible : on deduit
-// la famille du suffixe plutot que d'afficher un badge muet.
-function decrire(type) {
-  const connu = OPERATIONS[type]
-  if (connu) return connu
-  const t = String(type || '')
-  if (/desactivation|suppression/.test(t)) return { libelle: t, ton: 'danger', icone: 'trash' }
-  if (/creation|activation|entree/.test(t)) return { libelle: t, ton: 'success', icone: 'check' }
-  if (/modification|changement/.test(t)) return { libelle: t, ton: 'warning', icone: 'edit' }
-  return { libelle: t, ton: '', icone: 'info' }
-}
-
-/* --- Resume des details -------------------------------------------------- */
-
-// Les champs qui racontent l'operation, dans l'ordre ou on veut les lire.
-const CHAMPS_PARLANTS = [
-  'nom', 'produit_nom', 'libelle', 'motif', 'categorie', 'code',
-  'quantite', 'montant', 'montant_total', 'nouveau_prix', 'ancien_prix',
-  'vendeuse_nom', 'fournisseur_nom', 'utilisateur_nom', 'reference',
-]
-
-function etiquetteChamp(cle) {
-  return String(cle).replace(/_/g, ' ')
-}
-
-function valeurLisible(cle, valeur) {
-  if (valeur === null || valeur === undefined) return '-'
-  if (typeof valeur === 'boolean') return valeur ? 'oui' : 'non'
-  if (typeof valeur === 'object') return Array.isArray(valeur) ? `${valeur.length} element(s)` : '…'
-  if (typeof valeur === 'number') {
-    if (/prix|montant|cout|total/.test(cle)) return formatMontant(valeur)
-    if (/quantite|nombre/.test(cle)) return formatQuantite(valeur)
-    return String(valeur)
-  }
-  const texte = String(valeur)
-  return texte.length > 42 ? `${texte.slice(0, 42)}…` : texte
-}
-
-function resumeDetails(details) {
-  if (!details || typeof details !== 'object') return []
-  const cles = Object.keys(details)
-  const prioritaires = CHAMPS_PARLANTS.filter((c) => cles.includes(c))
-  const retenues = [...prioritaires, ...cles.filter((c) => !prioritaires.includes(c))].slice(0, 3)
-  return retenues.map((c) => ({ cle: c, etiquette: etiquetteChamp(c), valeur: valeurLisible(c, details[c]) }))
-}
 
 /* --- Recherche libre cote client ---------------------------------------- */
 
@@ -114,9 +49,33 @@ const filtresActifs = computed(() =>
   Boolean(filtres.type_operation || filtres.utilisateur_id || filtres.from || filtres.to)
 )
 
-/* --- Detail complet ------------------------------------------------------ */
+/* --- Detail --------------------------------------------------------------- */
 
 const opDetail = ref(null)
+const donneesTechniquesOuvertes = ref(false)
+
+function ouvrirDetail(op) {
+  opDetail.value = op
+  // Toujours replie a l'ouverture : le JSON est un outil de depannage, plus la
+  // vue principale.
+  donneesTechniquesOuvertes.value = false
+}
+
+const detailChangements = computed(() => (opDetail.value ? changements(opDetail.value.details) : []))
+const detailComparaison = computed(() => (opDetail.value ? aEtatAnterieur(opDetail.value.details) : false))
+
+// Une modification affiche son resume a cote du tableau avant/apres ; une
+// creation n'a pas de tableau, donc on lui presente l'etat d'arrivee complet.
+const detailValeurs = computed(() => {
+  if (!opDetail.value) return []
+  return detailComparaison.value
+    ? resumeLisible(opDetail.value.details, 12)
+    : valeursEnregistrees(opDetail.value.details)
+})
+const detailConsequence = computed(() => (opDetail.value ? consequence(opDetail.value) : ''))
+const detailAncienneForme = computed(() =>
+  opDetail.value ? partiesDetails(opDetail.value.details).ancienneForme : false
+)
 
 const jsonDetail = computed(() =>
   opDetail.value ? JSON.stringify(opDetail.value.details ?? {}, null, 2) : ''
@@ -200,7 +159,9 @@ onMounted(async () => {
             <label>Utilisateur</label>
             <select v-model="filtres.utilisateur_id" @change="filtrer">
               <option value="">Tous</option>
-              <option v-for="u in utilisateurs" :key="u.id" :value="u.id">{{ u.nom }}</option>
+              <option v-for="u in utilisateurs" :key="u.id" :value="u.id">
+                {{ [u.prenom, u.nom].filter(Boolean).join(' ') || u.nom_utilisateur }}
+              </option>
             </select>
           </div>
           <div class="field">
@@ -266,7 +227,7 @@ onMounted(async () => {
           <table class="table-cards">
             <thead>
               <tr>
-                <th style="width: 160px">Date</th>
+                <th style="width: 165px">Date</th>
                 <th>Operation</th>
                 <th>Utilisateur</th>
                 <th class="hide-sm">Details</th>
@@ -274,31 +235,31 @@ onMounted(async () => {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="op in operationsAffichees" :key="op.id">
-                <td data-label="Date" class="small muted nowrap">{{ formatDate(op.date) }}</td>
+              <tr v-for="op in operationsAffichees" :key="op.id" class="ligne-cliquable" @click="ouvrirDetail(op)">
+                <td data-label="Date" class="small muted nowrap">
+                  {{ formatDate(op.date) }}
+                  <div class="small muted">{{ tempsRelatif(op.date) }}</div>
+                </td>
                 <td data-label="Operation" class="td-titre">
                   <span class="badge" :class="decrire(op.type_operation).ton">
                     <Icon :name="decrire(op.type_operation).icone" :size="13" />
                     {{ decrire(op.type_operation).libelle }}
                   </span>
-                  <div class="small muted mono mt-2 hide-sm">{{ op.type_operation }}</div>
                 </td>
-                <td data-label="Utilisateur" class="td-strong">{{ op.utilisateur_nom || '-' }}</td>
+                <td data-label="Utilisateur">
+                  <div class="td-strong">{{ op.utilisateur_nom || 'Systeme' }}</div>
+                  <div v-if="op.utilisateur_identifiant" class="small muted mono">{{ op.utilisateur_identifiant }}</div>
+                </td>
                 <td data-label="Details" class="hide-sm">
-                  <div v-if="resumeDetails(op.details).length" class="row wrap" style="gap: 6px">
-                    <span v-for="d in resumeDetails(op.details)" :key="d.cle" class="badge">
-                      <span class="muted">{{ d.etiquette }}</span> {{ d.valeur }}
+                  <div v-if="resumeLisible(op.details).length" class="row wrap" style="gap: 6px">
+                    <span v-for="d in resumeLisible(op.details)" :key="d.cle" class="badge">
+                      <span class="muted">{{ d.label }}</span> {{ d.valeur }}
                     </span>
                   </div>
                   <span v-else class="small muted">Aucun detail</span>
                 </td>
                 <td data-label="" class="td-actions">
-                  <button
-                    type="button"
-                    class="btn-sm btn-ghost"
-                    title="Voir les details bruts"
-                    @click="opDetail = op"
-                  >
+                  <button type="button" class="btn-sm btn-ghost" title="Voir le detail" @click.stop="ouvrirDetail(op)">
                     <Icon name="eye" :size="15" />
                   </button>
                 </td>
@@ -313,19 +274,117 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- ============ Detail d'une operation ============ -->
     <Modal v-if="opDetail" :title="decrire(opDetail.type_operation).libelle" size="lg" @close="opDetail = null">
-      <div class="stack">
-        <div class="row wrap">
-          <span class="badge" :class="decrire(opDetail.type_operation).ton">
-            <Icon :name="decrire(opDetail.type_operation).icone" :size="13" />
-            {{ decrire(opDetail.type_operation).libelle }}
-          </span>
-          <span class="badge mono">{{ opDetail.type_operation }}</span>
-          <span class="small muted">{{ formatDate(opDetail.date) }}</span>
-          <span class="small muted">par {{ opDetail.utilisateur_nom || 'systeme' }}</span>
+      <div class="stack" style="gap: 18px">
+        <!-- Qui, quand, sur quoi -->
+        <div class="fiche-audit">
+          <div class="fiche-ligne">
+            <span class="fiche-cle">Operation</span>
+            <span class="fiche-valeur">
+              <span class="badge" :class="decrire(opDetail.type_operation).ton">
+                <Icon :name="decrire(opDetail.type_operation).icone" :size="13" />
+                {{ decrire(opDetail.type_operation).libelle }}
+              </span>
+            </span>
+          </div>
+          <div class="fiche-ligne">
+            <span class="fiche-cle">Realisee par</span>
+            <span class="fiche-valeur">
+              <strong>{{ opDetail.utilisateur_nom || 'Systeme' }}</strong>
+              <template v-if="opDetail.utilisateur_identifiant">
+                <span class="mono muted small"> ({{ opDetail.utilisateur_identifiant }})</span>
+              </template>
+              <span v-if="opDetail.utilisateur_actif === false" class="badge danger" style="margin-left: 6px">
+                compte bloque
+              </span>
+            </span>
+          </div>
+          <div class="fiche-ligne">
+            <span class="fiche-cle">Date et heure</span>
+            <span class="fiche-valeur">
+              {{ dateEnToutesLettres(opDetail.date) }}
+              <span class="muted small"> — {{ tempsRelatif(opDetail.date) }}</span>
+            </span>
+          </div>
+          <div v-if="opDetail.entite_id" class="fiche-ligne">
+            <span class="fiche-cle">Element concerne</span>
+            <span class="fiche-valeur mono">n° {{ opDetail.entite_id }}</span>
+          </div>
         </div>
-        <pre class="json-brut">{{ jsonDetail }}</pre>
+
+        <!-- Ce que l'operation implique -->
+        <div v-if="detailConsequence" class="alert alert-info consequence">
+          <Icon name="info" :size="16" />
+          <span>{{ detailConsequence }}</span>
+        </div>
+
+        <!-- Ce qui a change : uniquement quand il y a un etat anterieur.
+             Une creation n'a rien "avant", et une colonne vide en face de
+             chaque champ laisserait croire a un effacement. -->
+        <section v-if="detailComparaison && detailChangements.length">
+          <h3 class="titre-section">Ce qui a change</h3>
+          <div class="table-wrap">
+            <table class="table-cards">
+              <thead>
+                <tr>
+                  <th>Champ</th>
+                  <th>Avant</th>
+                  <th>Apres</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in detailChangements" :key="c.cle">
+                  <td data-label="Champ" class="td-titre td-strong">{{ c.label }}</td>
+                  <td data-label="Avant" class="valeur-avant">{{ c.avant ?? '—' }}</td>
+                  <td data-label="Apres" class="valeur-apres">{{ c.apres ?? '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Informations enregistrees avec l'operation -->
+        <section v-if="detailValeurs.length">
+          <h3 class="titre-section">
+            {{ detailComparaison ? 'Informations enregistrees' : 'Valeurs enregistrees' }}
+          </h3>
+          <div class="fiche-audit">
+            <div v-for="d in detailValeurs" :key="d.cle" class="fiche-ligne">
+              <span class="fiche-cle">{{ d.label }}</span>
+              <span class="fiche-valeur">{{ d.valeur }}</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Les traces anterieures a la mise en place de l'avant/apres n'ont pas
+             d'etat de depart : on le dit, plutot que d'afficher un tableau vide
+             qui laisserait croire a une perte de donnees. -->
+        <p v-if="detailAncienneForme && !detailChangements.length" class="small muted">
+          Cette trace a ete enregistree avant que le journal ne conserve l'etat anterieur des
+          fiches. Seules les informations ci-dessus ont ete relevees au moment de l'operation.
+        </p>
+
+        <p v-else-if="!detailChangements.length && !detailResume.length" class="small muted">
+          Aucune information complementaire n'a ete enregistree pour cette operation.
+        </p>
+
+        <!-- Depannage -->
+        <section>
+          <button type="button" class="btn-sm btn-ghost" @click="donneesTechniquesOuvertes = !donneesTechniquesOuvertes">
+            <Icon :name="donneesTechniquesOuvertes ? 'chevronDown' : 'chevronRight'" :size="14" />
+            Donnees techniques
+          </button>
+          <div v-if="donneesTechniquesOuvertes" class="mt-3">
+            <p class="small muted mb-2">
+              Contenu brut de la trace, tel qu'il est enregistre. Utile pour un diagnostic.
+              <span class="mono">{{ opDetail.type_operation }}</span>
+            </p>
+            <pre class="json-brut">{{ jsonDetail }}</pre>
+          </div>
+        </section>
       </div>
+
       <template #footer>
         <button type="button" @click="opDetail = null">Fermer</button>
       </template>
@@ -334,6 +393,45 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.ligne-cliquable { cursor: pointer; }
+.ligne-cliquable:hover { background: var(--bg-subtle); }
+
+.titre-section {
+  margin: 0 0 9px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.fiche-audit {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.fiche-ligne {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  padding: 9px 13px;
+}
+.fiche-ligne + .fiche-ligne { border-top: 1px solid var(--border); }
+.fiche-cle {
+  flex: none;
+  width: 150px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.fiche-valeur { flex: 1; min-width: 0; font-size: 13px; color: var(--text-h); overflow-wrap: anywhere; }
+
+/* L'ancienne valeur est barree et effacee, la nouvelle mise en avant : la
+   direction du changement se lit sans avoir a comparer deux colonnes. */
+.valeur-avant { color: var(--text-muted); text-decoration: line-through; }
+.valeur-apres { font-weight: 600; color: var(--text-h); }
+
+.consequence { align-items: flex-start; }
+
 .json-brut {
   margin: 0;
   padding: 14px;
@@ -346,5 +444,12 @@ onMounted(async () => {
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre;
+}
+
+/* En cartes, les libelles "Avant" et "Apres" portent le sens : le barre seul
+   serait ambigu sans son entete de colonne. */
+@media (max-width: 700px) {
+  .fiche-ligne { flex-direction: column; gap: 2px; }
+  .fiche-cle { width: auto; }
 }
 </style>

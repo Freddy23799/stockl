@@ -54,6 +54,30 @@ async function charger() {
 
 onMounted(charger)
 
+/* --- Regeneration du code ------------------------------------------------ */
+
+// Le code a six chiffres est un secret partage : il suffit a attribuer une
+// vente. S'il circule (papier oublie sur le comptoir, depart de la personne),
+// il faut pouvoir le remplacer sans supprimer la fiche - sinon tout
+// l'historique des ventes de cette vendeuse serait perdu.
+const aRegenerer = ref(null)
+const regenerationEnCours = ref(null)
+
+async function confirmerRegeneration() {
+  const vendeuse = aRegenerer.value
+  regenerationEnCours.value = vendeuse.id
+  aRegenerer.value = null
+  try {
+    const { data } = await api.patch(`/vendeuses/${vendeuse.id}/regenerer-code`)
+    await charger()
+    toasts.succes(`Nouveau code de ${vendeuse.nom} : ${data.code}`)
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur lors de la generation du code')
+  } finally {
+    regenerationEnCours.value = null
+  }
+}
+
 async function copierCode(code) {
   try {
     await navigator.clipboard.writeText(String(code))
@@ -234,6 +258,16 @@ async function basculerActivation(v) {
                     <Icon name="edit" :size="15" />
                   </button>
                   <button
+                    type="button"
+                    class="btn-sm btn-ghost"
+                    title="Generer un nouveau code"
+                    :disabled="regenerationEnCours === v.id"
+                    @click="aRegenerer = v"
+                  >
+                    <span v-if="regenerationEnCours === v.id" class="spinner" />
+                    <Icon v-else name="refresh" :size="15" />
+                  </button>
+                  <button
                     v-if="v.actif"
                     type="button"
                     class="btn-sm btn-ghost"
@@ -308,6 +342,15 @@ async function basculerActivation(v) {
         </template>
       </template>
     </Modal>
+
+    <ConfirmDialog
+      v-if="aRegenerer"
+      title="Generer un nouveau code ?"
+      :message="`L'ancien code de « ${aRegenerer.nom} » (${aRegenerer.code}) cessera immediatement de fonctionner a la caisse. Ses ventes deja enregistrees ne sont pas touchees. Pensez a lui communiquer le nouveau code.`"
+      confirm-label="Generer un nouveau code"
+      @confirm="confirmerRegeneration"
+      @cancel="aRegenerer = null"
+    />
 
     <ConfirmDialog
       v-if="aDesactiver"

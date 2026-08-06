@@ -133,7 +133,13 @@ const libellesX = computed(() => {
     if (posX(dernier) - liste[liste.length - 1]?.x < 46) liste.pop()
     liste.push({ i: dernier, x: posX(dernier), texte: String(source[dernier].x ?? '') })
   }
-  return liste
+  // Un libelle centre sur le tout premier ou le tout dernier point deborde de
+  // la moitie de sa largeur hors du cadre, et se fait rogner : le dernier jour
+  // s'affichait "06/0". On l'ancre par le bord au lieu du centre.
+  return liste.map((l, index) => ({
+    ...l,
+    ancre: index === 0 ? 'start' : (index === liste.length - 1 ? 'end' : 'middle'),
+  }))
 })
 
 /* --- Survol ---------------------------------------------------------------
@@ -215,7 +221,7 @@ const resume = computed(() => {
           >
             {{ formatY(g) }}
           </text>
-          <text v-for="l in libellesX" :key="`x${l.i}`" :x="l.x" :y="height - 8" text-anchor="middle">
+          <text v-for="l in libellesX" :key="`x${l.i}`" :x="l.x" :y="height - 8" :text-anchor="l.ancre">
             {{ l.texte }}
           </text>
         </g>

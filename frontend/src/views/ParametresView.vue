@@ -428,8 +428,14 @@ async function copier(texte, libelle) {
               />
               <div class="field flex-1" style="min-width: 220px">
                 <label>Remplacer le logo</label>
-                <input type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" @change="surChoixLogo" />
-                <span class="field-hint">PNG, JPG, WebP ou SVG — 5 Mo maximum</span>
+                <!-- PNG et JPEG seulement : ce sont les deux seuls formats
+                     embarquables dans un PDF, et ce logo doit s'imprimer en
+                     entete de tous les rapports. -->
+                <input type="file" accept="image/png,image/jpeg" @change="surChoixLogo" />
+                <span class="field-hint">
+                  PNG ou JPG — 5 Mo maximum. Ces formats sont les seuls qui s'impriment
+                  en entete des rapports PDF.
+                </span>
               </div>
               <button
                 type="button"
