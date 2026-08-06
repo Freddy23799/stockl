@@ -151,7 +151,11 @@ async function creerFonctions(client, adminId) {
 async function creerFournisseurs(client, adminId) {
   const liste = [];
   for (const [i, f] of D.FOURNISSEURS.entries()) {
-    const date = `${jour(ajouterJours(new Date(D.DEBUT), i * 3))}T09:${String(10 + i).padStart(2, '0')}:00`;
+    // Tous les fournisseurs ne sont pas la des le premier jour : on en trouve
+    // de nouveaux au fil des annees.
+    const date = f.arrivee
+      ? `${f.arrivee}T09:${String(10 + i).padStart(2, '0')}:00`
+      : `${jour(ajouterJours(new Date(D.DEBUT), i * 3))}T09:${String(10 + i).padStart(2, '0')}:00`;
     const { rows } = await client.query(
       'INSERT INTO fournisseurs (nom, contact, created_at) VALUES ($1, $2, $3) RETURNING *',
       [f.nom, f.contact, date]
@@ -161,9 +165,28 @@ async function creerFournisseurs(client, adminId) {
       type: 'fournisseur_creation', entiteId: rows[0].id, utilisateurId: adminId, date,
       details: { nom: f.nom }, apres: { nom: f.nom, contact: f.contact, actif: true },
     });
+    liste[liste.length - 1].config = f;
   }
   log(`Fournisseurs : ${liste.length}`);
   return liste;
+}
+
+// Cessation de relation : le fournisseur n'est plus proposable a la reception,
+// mais toutes ses entrees passees restent au journal.
+async function arreterFournisseurs(client, fournisseurs, adminId) {
+  let compte = 0;
+  for (const f of fournisseurs) {
+    if (!f.config?.fin) continue;
+    const horodatage = `${f.config.fin.date}T16:00:00`;
+    await client.query('UPDATE fournisseurs SET actif = false WHERE id = $1', [f.id]);
+    await audit(client, {
+      type: 'fournisseur_desactivation', entiteId: f.id, utilisateurId: adminId, date: horodatage,
+      details: { nom: f.nom, motif: f.config.fin.motif },
+      avant: { actif: true }, apres: { actif: false },
+    });
+    compte += 1;
+  }
+  log(`Fournisseurs desactives : ${compte}`);
 }
 
 /* --- Employes ------------------------------------------------------------- */
@@ -274,8 +297,10 @@ async function creerVendeuses(client, adminId, employes) {
 async function creerProduits(client, adminId, photos) {
   const liste = [];
   for (const [index, p] of D.PRODUITS.entries()) {
-    // Le catalogue se constitue sur les premieres semaines, pas en un jour.
-    const date = jour(ajouterJours(new Date(D.DEBUT), Math.floor(index / 6) * 4));
+    // Le catalogue se constitue sur les premieres semaines, puis s'enrichit au
+    // fil des annees : de nouvelles gammes arrivent, ce qui se voit dans les
+    // rapports comme un elargissement progressif de l'offre.
+    const date = p.arrivee || jour(ajouterJours(new Date(D.DEBUT), Math.floor(index / 6) * 4));
     const photo = copierVersUploads(photos.get(`produit-${index}`), 'produits', `produit-${index + 1}`);
 
     const { rows } = await client.query(
@@ -465,6 +490,72 @@ async function vente(client, produits, vendeusesActives, horodatage, adminId) {
   return total;
 }
 
+/* --- Changement de prix --------------------------------------------------- */
+
+// Un prix qui ne bouge pas pendant deux ans et demi n'existe pas : le change,
+// le transport et les couts d'achat le poussent vers le haut. Chaque
+// changement est historise, et les ventes deja enregistrees gardent le prix
+// applique au moment ou elles ont eu lieu.
+async function changerPrix(client, produit, nouveauPrix, horodatage, adminId) {
+  const ancien = Number(produit.prix_vente);
+  const arrondi = Math.round(nouveauPrix / 500) * 500;
+  if (arrondi === ancien) return false;
+
+  await client.query(
+    'INSERT INTO historique_prix (produit_id, ancien_prix, nouveau_prix, auteur_id, date) VALUES ($1,$2,$3,$4,$5)',
+    [produit.id, ancien, arrondi, adminId, horodatage]
+  );
+  await client.query(
+    'UPDATE produits SET prix_vente = $1, updated_at = $2 WHERE id = $3',
+    [arrondi, horodatage, produit.id]
+  );
+  produit.prix_vente = arrondi;
+
+  await audit(client, {
+    type: 'produit_changement_prix', entiteId: produit.id, utilisateurId: adminId, date: horodatage,
+    details: { nom: produit.nom, ancien_prix: ancien, nouveau_prix: arrondi },
+    avant: { prix_vente: ancien }, apres: { prix_vente: arrondi },
+  });
+  return true;
+}
+
+/* --- Retour client -------------------------------------------------------- */
+
+// Un client rapporte un article : il revient en stock, valorise au cout moyen.
+// Sans ce cas, le motif "retour_client" n'apparait jamais et l'ecran des
+// mouvements laisse croire qu'un retour est impossible.
+async function retourClient(client, produit, quantite, horodatage, adminId) {
+  await client.query(
+    `INSERT INTO lots_stock (produit_id, quantite_initiale, quantite_restante, cout_unitaire, date_entree)
+     VALUES ($1,$2,$2,$3,$4)`,
+    [produit.id, quantite, produit.cmp || 0, horodatage]
+  );
+  const avant = produit.stock;
+  produit.stock += quantite;
+  await client.query('UPDATE produits SET quantite_stock = $1, updated_at = $2 WHERE id = $3',
+    [produit.stock, horodatage, produit.id]);
+  await client.query(
+    `INSERT INTO mouvements_stock (produit_id, type, quantite, cout_unitaire, auteur_id, motif, note, date)
+     VALUES ($1,'entree',$2,$3,$4,'retour_client',$5,$6)`,
+    [produit.id, quantite, produit.cmp || 0, adminId,
+      parmi([
+        'Article rapporte par le client, emballage intact',
+        'Erreur de reference a la vente',
+        'Le client a change d\'avis, produit non ouvert',
+        'Echange contre une autre reference',
+      ]), horodatage]
+  );
+  await audit(client, {
+    type: 'ajustement_stock', entiteId: produit.id, utilisateurId: adminId, date: horodatage,
+    details: {
+      produit_nom: produit.nom, motif: 'retour_client', ecart: quantite,
+      valeur_ecart: quantite * (produit.cmp || 0),
+    },
+    avant: { quantite_stock: avant, unite_stock: 'piece' },
+    apres: { quantite_stock: produit.stock, unite_stock: 'piece' },
+  });
+}
+
 /* --- Simulation jour par jour --------------------------------------------- */
 
 // Coefficient d'activite : decembre et fevrier portent les fetes et la
@@ -497,7 +588,12 @@ async function simuler(client, contexte) {
   let nbEntrees = 0;
   let nbAjustements = 0;
   let nbDepenses = 0;
+  let nbPrix = 0;
+  let nbRetours = 0;
   let moisCourant = -1;
+
+  // Produits retires du catalogue en cours de route, indexes par nom.
+  const arrets = new Map(D.PRODUITS_ARRETES.map((a) => [a.nom, a]));
 
   while (date <= fin) {
     const cle = jour(date);
@@ -509,8 +605,39 @@ async function simuler(client, contexte) {
       nbDepenses += await depensesDuMois(client, date, adminId);
     }
 
-    // Produits deja au catalogue a cette date.
-    const catalogue = produits.filter((p) => jour(new Date(p.created_at)) <= cle);
+    // Produits au catalogue a cette date : entres, et pas encore retires.
+    const catalogue = produits.filter((p) => {
+      if (jour(new Date(p.created_at)) > cle) return false;
+      const arret = arrets.get(p.nom);
+      return !arret || arret.date > cle;
+    });
+
+    // Revision des prix : en janvier surtout, et ponctuellement quand le cout
+    // d'achat a derive. Une hausse de 4 a 12 %, arrondie au multiple de 500 -
+    // personne n'affiche un parfum a 46 317 F.
+    if (date.getDate() === 15 && (mois === 0 || chance(0.25))) {
+      for (const produit of catalogue) {
+        if (!chance(mois === 0 ? 0.55 : 0.12)) continue;
+        const hausse = 1 + 0.04 + alea() * 0.08;
+        if (await changerPrix(client, produit, produit.prix_vente * hausse,
+          heureOuvrable(date, 8, 3), adminId)) nbPrix += 1;
+      }
+    }
+
+    // Retrait d'une reference du catalogue.
+    for (const [nom, arret] of arrets) {
+      if (arret.date !== cle) continue;
+      const produit = produits.find((p) => p.nom === nom);
+      if (!produit) continue;
+      const horodatage = heureOuvrable(date, 16, 2);
+      await client.query('UPDATE produits SET actif = false, updated_at = $1 WHERE id = $2',
+        [horodatage, produit.id]);
+      await audit(client, {
+        type: 'produit_desactivation', entiteId: produit.id, utilisateurId: adminId, date: horodatage,
+        details: { nom: produit.nom, motif: arret.motif },
+        avant: { actif: true }, apres: { actif: false },
+      });
+    }
 
     // Reassort : on commande ce qui approche du seuil. Le magasinier ne
     // recommande pas tout le meme jour, d'ou le tirage.
@@ -530,7 +657,15 @@ async function simuler(client, contexte) {
       // approvisionnement soumis au change et au transport.
       const derive = 1 + (alea() - 0.42) * 0.18;
       const coutTotal = Math.round(quantite * produit.config.achat * derive);
-      await entree(client, produit, quantite, coutTotal, parmi(fournisseurs).id,
+      // On ne commande qu'aux fournisseurs avec qui la relation est ouverte a
+      // cette date : passer une commande a quelqu'un qu'on ne connait pas
+      // encore, ou avec qui on a cesse, se verrait immediatement dans le journal.
+      const disponiblesFournisseurs = fournisseurs.filter((f) => {
+        if (f.config?.arrivee && f.config.arrivee > cle) return false;
+        if (f.config?.fin && f.config.fin.date < cle) return false;
+        return true;
+      });
+      await entree(client, produit, quantite, coutTotal, parmi(disponiblesFournisseurs).id,
         heureOuvrable(date, 7, 4), adminId);
       nbEntrees += 1;
     }
@@ -552,6 +687,13 @@ async function simuler(client, contexte) {
       if (montant !== null) nbVentes += 1;
     }
 
+    // Retour client : environ une fois tous les dix jours.
+    if (chance(0.1) && catalogue.length) {
+      const produit = parmi(catalogue);
+      await retourClient(client, produit, chance(0.85) ? 1 : 2, heureOuvrable(date, 10, 8), adminId);
+      nbRetours += 1;
+    }
+
     // Casse, perte, inventaire : environ une fois par semaine.
     if (chance(0.14) && catalogue.length) {
       const produit = parmi(catalogue.filter((p) => p.stock > 3) || catalogue);
@@ -562,6 +704,9 @@ async function simuler(client, contexte) {
           { motif: 'perte', note: 'Article perime retire de la vente', perte: 1 },
           { motif: 'vol', note: 'Disparition constatee en fin de journee', perte: 1 },
           { motif: 'inventaire', note: 'Ecart constate au comptage des rayons', perte: entre(1, 2) },
+          { motif: 'correction', note: 'Erreur de saisie sur une entree precedente', perte: entre(1, 2) },
+          { motif: 'vol', note: 'Vol a l\'etalage constate sur les images de surveillance', perte: entre(1, 2) },
+          { motif: 'casse', note: 'Renverse par un client en rayon', perte: 1 },
         ]);
         await ajustement(client, produit, produit.stock - cas.perte, cas.motif, cas.note,
           heureOuvrable(date, 17, 2), adminId);
@@ -583,11 +728,28 @@ async function simuler(client, contexte) {
     date = ajouterJours(date, 1);
   }
 
-  log(`Ventes : ${nbVentes} | Entrees de stock : ${nbEntrees} | Ajustements : ${nbAjustements} | Depenses : ${nbDepenses}`);
-  return { nbVentes, nbEntrees, nbAjustements, nbDepenses };
+  log(`Ventes : ${nbVentes} | Entrees : ${nbEntrees} | Ajustements : ${nbAjustements} | `
+    + `Retours : ${nbRetours} | Changements de prix : ${nbPrix} | Depenses : ${nbDepenses}`);
+  return { nbVentes, nbEntrees, nbAjustements, nbRetours, nbPrix, nbDepenses };
 }
 
 /* --- Depenses ------------------------------------------------------------- */
+
+const NOTES_DEPENSE = {
+  Loyer: ['Quittance remise au proprietaire', 'Regle en especes, recu n° 4471'],
+  Electricite: ['Facture ENEO du mois', 'Releve elevé, climatisation en marche continue'],
+  Eau: ['Facture CAMWATER'],
+  Transport: ['Course au marche Mokolo pour reassort', 'Livraison client quartier Bastos',
+    'Retrait de colis a l\'agence de transport', 'Deplacement chez le fournisseur'],
+  'Fournitures de bureau': ['Rames de papier et cartouches', 'Rouleaux pour l\'imprimante de caisse'],
+  'Entretien et reparations': ['Reparation de la vitrine refrigeree', 'Peinture de la devanture',
+    'Remplacement de deux neons du rayon'],
+  Publicite: ['Campagne sur les reseaux sociaux', 'Banderole pour la fete des meres',
+    'Distribution de flyers au quartier'],
+  'Frais bancaires': ['Commission de tenue de compte'],
+  'Emballages et sachets': ['Commande de sachets kraft logotes', 'Papier cadeau pour les fetes'],
+  'Internet et telephone': ['Abonnement fibre et forfaits mobiles'],
+};
 
 async function depensesDuMois(client, date, adminId) {
   let compte = 0;
@@ -604,10 +766,14 @@ async function depensesDuMois(client, date, adminId) {
       const montant = min === max ? min : entre(min, max);
       const horodatage = heureOuvrable(quand, 9, 8);
 
+      // Une note sur environ une depense sur trois : c'est ce qu'on retrouve
+      // dans un vrai journal de caisse, ni systematique ni absent.
+      const note = chance(0.34) ? (NOTES_DEPENSE[categorie.nom] ? parmi(NOTES_DEPENSE[categorie.nom]) : null) : null;
+
       const { rows } = await client.query(
         `INSERT INTO depenses (categorie, montant, note, auteur_id, date)
          VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-        [categorie.nom, montant, null, adminId, horodatage]
+        [categorie.nom, montant, note, adminId, horodatage]
       );
       await audit(client, {
         type: 'depense_creation', entiteId: rows[0].id, utilisateurId: adminId, date: horodatage,
@@ -898,6 +1064,152 @@ async function appliquerDeparts(client, employes, adminId) {
   return compte;
 }
 
+/* --- Vie courante de l'administration ------------------------------------- */
+
+// Les operations qu'un gerant fait quelques fois par an et qui, sans elles,
+// laissent des pans entiers du systeme sans aucune trace : un code de vente
+// qu'on remplace, une vendeuse suspendue puis reprise, une fonction rebaptisee,
+// des reglages ajustes. C'est ce qui distingue un systeme vecu d'une base
+// remplie d'un coup.
+async function vieAdministrative(client, contexte) {
+  const { vendeuses, employes, adminId } = contexte;
+  let compte = 0;
+
+  // Un code de vente qui a circule est remplace.
+  const aRegenerer = vendeuses.filter((v) => v.employe.config.vendeuse && !v.employe.config.depart).slice(0, 2);
+  for (const [i, v] of aRegenerer.entries()) {
+    const horodatage = `${['2025-03-11', '2026-01-19'][i]}T11:20:00`;
+    let code;
+    do {
+      code = String(entre(100000, 999999));
+      // eslint-disable-next-line no-await-in-loop
+    } while ((await client.query('SELECT 1 FROM vendeuses WHERE code = $1', [code])).rows.length);
+    await client.query('UPDATE vendeuses SET code = $1 WHERE id = $2', [code, v.id]);
+    // L'ancien code n'est volontairement pas journalise : l'ecrire reviendrait
+    // a le laisser lisible par la personne a qui on vient de le retirer.
+    await audit(client, {
+      type: 'vendeuse_code_regenere', entiteId: v.id, utilisateurId: adminId, date: horodatage,
+      details: { vendeuse_nom: v.nom },
+    });
+    compte += 1;
+  }
+
+  // Une vendeuse suspendue quelques semaines, puis reprise.
+  const suspendue = vendeuses.find((v) => !v.employe.config.depart && v.id !== aRegenerer[0]?.id);
+  if (suspendue) {
+    for (const etape of [
+      { date: '2025-10-06T17:45:00', actif: false, type: 'vendeuse_desactivation' },
+      { date: '2025-11-17T08:40:00', actif: true, type: 'vendeuse_activation' },
+    ]) {
+      await client.query('UPDATE vendeuses SET actif = $1 WHERE id = $2', [etape.actif, suspendue.id]);
+      await audit(client, {
+        type: etape.type, entiteId: suspendue.id, utilisateurId: adminId, date: etape.date,
+        details: { nom: suspendue.nom },
+        avant: { actif: !etape.actif }, apres: { actif: etape.actif },
+      });
+      compte += 1;
+    }
+  }
+
+  // Fiche produit corrigee : un seuil d'alerte mal calibre, un conditionnement
+  // mal saisi. Cela arrive, et le journal doit pouvoir le montrer.
+  const { rows: aCorriger } = await client.query(
+    'SELECT id, nom, seuil_alerte FROM produits WHERE actif = true ORDER BY id LIMIT 4'
+  );
+  for (const [i, p] of aCorriger.entries()) {
+    const horodatage = `${['2024-08-22', '2025-02-14', '2025-09-30', '2026-03-24'][i]}T14:10:00`;
+    const nouveau = Number(p.seuil_alerte) + entre(2, 6);
+    await client.query('UPDATE produits SET seuil_alerte = $1, updated_at = $2 WHERE id = $3',
+      [nouveau, horodatage, p.id]);
+    await audit(client, {
+      type: 'produit_modification', entiteId: p.id, utilisateurId: adminId, date: horodatage,
+      details: { nom: p.nom },
+      avant: { seuil_alerte: p.seuil_alerte }, apres: { seuil_alerte: nouveau },
+    });
+    compte += 1;
+  }
+
+  // Une fonction rebaptisee, une autre retiree des choix proposes. Le libelle
+  // fige dans les periodes de carriere ne bouge pas : les bulletins deja edites
+  // gardent le titre porte a l'epoque.
+  const { rows: fonctionsBase } = await client.query("SELECT id, nom FROM fonctions WHERE nom = 'Caissiere'");
+  if (fonctionsBase.length) {
+    await client.query("UPDATE fonctions SET nom = 'Caissiere principale', updated_at = $1 WHERE id = $2",
+      ['2026-01-08T09:15:00', fonctionsBase[0].id]);
+    await audit(client, {
+      type: 'fonction_modification', entiteId: fonctionsBase[0].id, utilisateurId: adminId,
+      date: '2026-01-08T09:15:00', details: { nom: 'Caissiere principale' },
+      avant: { nom: 'Caissiere', actif: true }, apres: { nom: 'Caissiere principale', actif: true },
+    });
+    compte += 1;
+  }
+  const { rows: fonctionRetiree } = await client.query("SELECT id, nom FROM fonctions WHERE nom = 'Vigile'");
+  if (fonctionRetiree.length) {
+    await client.query('UPDATE fonctions SET actif = false, updated_at = $1 WHERE id = $2',
+      ['2026-06-15T10:00:00', fonctionRetiree[0].id]);
+    await audit(client, {
+      type: 'fonction_modification', entiteId: fonctionRetiree[0].id, utilisateurId: adminId,
+      date: '2026-06-15T10:00:00', details: { nom: 'Vigile' },
+      avant: { nom: 'Vigile', actif: true }, apres: { nom: 'Vigile', actif: false },
+    });
+    compte += 1;
+  }
+
+  // Reglages ajustes en cours de route.
+  for (const etape of [
+    {
+      date: '2024-04-18T15:30:00', type: 'etablissement_modification',
+      details: { champs_modifies: 'etablissement_telephone_2, etablissement_site_web' },
+      avant: { etablissement_telephone_2: null, etablissement_site_web: null },
+      apres: {
+        etablissement_telephone_2: D.ETABLISSEMENT.etablissement_telephone_2,
+        etablissement_site_web: D.ETABLISSEMENT.etablissement_site_web,
+      },
+    },
+    {
+      date: '2024-10-09T11:05:00', type: 'parametres_logo_modifie',
+      details: { logo_path: 'uploads/logo/logo-machibel.png' },
+    },
+    {
+      date: '2025-05-21T16:20:00', type: 'parametres_modification',
+      details: { champs_modifies: 'methode_valorisation' },
+      avant: { methode_valorisation: 'CMP' }, apres: { methode_valorisation: 'FIFO' },
+    },
+  ]) {
+    await audit(client, { ...etape, entiteId: 1, utilisateurId: adminId });
+    compte += 1;
+  }
+  // La bascule vers FIFO est reellement appliquee : le journal ne doit jamais
+  // raconter autre chose que ce que la base contient.
+  await client.query("UPDATE parametres SET methode_valorisation = 'FIFO' WHERE id = 1");
+
+  // Un second compte administrateur, cree pour la comptable.
+  const comptable = employes.find((e) => e.config.fonction === 'Comptable');
+  if (comptable) {
+    const { rows: existe } = await client.query(
+      "SELECT id FROM utilisateurs WHERE nom_utilisateur = 'chantal.eyenga'"
+    );
+    if (!existe.length) {
+      const bcrypt = require('bcrypt');
+      const hash = await bcrypt.hash('Machibel@2026', 10);
+      const { rows } = await client.query(
+        `INSERT INTO utilisateurs (prenom, nom, nom_utilisateur, password_hash, role, actif, created_at)
+         VALUES ($1,$2,$3,$4,'admin',true,$5) RETURNING id`,
+        [comptable.prenom, comptable.nom, 'chantal.eyenga', hash, '2024-04-15T10:00:00']
+      );
+      await audit(client, {
+        type: 'utilisateur_creation', entiteId: rows[0].id, utilisateurId: adminId,
+        date: '2024-04-15T10:00:00',
+        details: { nom_utilisateur: 'chantal.eyenga' },
+        apres: { prenom: comptable.prenom, nom: comptable.nom, nom_utilisateur: 'chantal.eyenga', role: 'admin' },
+      });
+      compte += 1;
+    }
+  }
+
+  log(`Operations d'administration : ${compte}`);
+}
+
 /* --- Controles ------------------------------------------------------------ */
 
 // Le remplissage ne vaut rien s'il laisse le systeme incoherent. Ces controles
@@ -995,6 +1307,8 @@ async function principal() {
     await creerPaie(client, employes, adminId);
     await creerDocuments(client, employes, adminId, photos);
     await appliquerDeparts(client, employes, adminId);
+    await arreterFournisseurs(client, fournisseurs, adminId);
+    await vieAdministrative(client, { vendeuses, employes, adminId });
     await client.query('COMMIT');
 
     log('Verification de coherence...');

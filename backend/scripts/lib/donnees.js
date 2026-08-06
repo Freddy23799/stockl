@@ -231,6 +231,20 @@ const FOURNISSEURS = [
   { nom: 'Beaute Afrique SARL', contact: '+237 6 55 12 89 04 - commercial@beauteafrique.cm' },
   { nom: 'Essences Orientales', contact: '+237 6 91 60 73 28 - essences.or@mail.cm' },
   { nom: 'Grossiste Mokolo Beaute', contact: '+237 6 70 33 44 55' },
+  { nom: 'Dubai Fragrance House', contact: '+971 4 555 0198 - export@dubaifragrance.ae', arrivee: '2024-07-15' },
+  { nom: 'Karite Bio Burkina', contact: '+226 70 55 12 33 - ventes@karitebio.bf', arrivee: '2024-11-04' },
+  {
+    nom: 'Cosmetiques Express Bafoussam', contact: '+237 6 96 74 12 08',
+    arrivee: '2025-02-10',
+    // Un fournisseur avec qui on cesse de travailler : ses entrees passees
+    // restent au journal, mais il n'est plus proposable a la reception.
+    fin: { date: '2026-01-20', motif: 'Retards de livraison repetes' },
+  },
+  {
+    nom: 'Import Beaute Nigeria', contact: '+234 803 445 2210',
+    arrivee: '2025-06-02',
+    fin: { date: '2026-05-15', motif: 'Cessation d\'activite du fournisseur' },
+  },
 ];
 
 /**
@@ -276,6 +290,35 @@ const PRODUITS = [
   { nom: 'Rouge a levres mat', prix: 6800, achat: 3000, rotation: 9, seuil: 20 },
   { nom: 'Poudre compacte teint unifie', prix: 9800, achat: 4900, rotation: 7, seuil: 15 },
   { nom: 'Parfum d\'ambiance Vanille 200 mL', prix: 11500, achat: 5900, rotation: 5, seuil: 10 },
+  { nom: 'Eau de parfum Cuir Ambre 100 mL', prix: 68000, achat: 41000, rotation: 4, seuil: 4, arrivee: '2024-05-06' },
+  { nom: 'Eau de parfum Fleur d\'Oranger 90 mL', prix: 42000, achat: 24000, rotation: 6, seuil: 6, arrivee: '2024-05-06' },
+  { nom: 'Eau de toilette Homme Sport 100 mL', prix: 27000, achat: 14500, rotation: 9, seuil: 8, arrivee: '2024-06-10' },
+  { nom: 'Eau de toilette Homme Intense 100 mL', prix: 31000, achat: 17000, rotation: 7, seuil: 6, arrivee: '2024-06-10' },
+  { nom: 'Apres-rasage Fraicheur 100 mL', prix: 8500, achat: 4100, rotation: 8, seuil: 12, arrivee: '2024-06-10' },
+  { nom: 'Huile de coco vierge 250 mL', prix: 7500, achat: 3600, rotation: 9, seuil: 15, arrivee: '2024-09-02' },
+  { nom: 'Huile de ricin noire 100 mL', prix: 6800, achat: 3200, rotation: 8, seuil: 15, arrivee: '2024-09-02' },
+  { nom: 'Shampooing cheveux crepus 400 mL', prix: 9200, achat: 4600, rotation: 10, seuil: 15, arrivee: '2024-11-12' },
+  { nom: 'Apres-shampooing nourrissant 400 mL', prix: 9800, achat: 4900, rotation: 8, seuil: 12, arrivee: '2024-11-12' },
+  { nom: 'Masque capillaire karite 300 mL', prix: 11500, achat: 5700, rotation: 6, seuil: 10, arrivee: '2024-11-12' },
+  { nom: 'Gommage corporel sucre 250 mL', prix: 8800, achat: 4200, rotation: 7, seuil: 12, arrivee: '2025-01-13' },
+  { nom: 'Creme mains reparatrice 75 mL', prix: 4200, achat: 1900, rotation: 11, seuil: 20, arrivee: '2025-01-13' },
+  { nom: 'Baume levres karite', prix: 2500, achat: 1000, rotation: 13, seuil: 30, arrivee: '2025-01-13' },
+  { nom: 'Eau micellaire demaquillante 400 mL', prix: 7800, achat: 3800, rotation: 9, seuil: 15, arrivee: '2025-04-07' },
+  { nom: 'Lingettes demaquillantes x25', prix: 3200, achat: 1400, rotation: 10, seuil: 25, arrivee: '2025-04-07' },
+  { nom: 'Coffret homme Elegance', prix: 62000, achat: 37000, rotation: 3, seuil: 3, arrivee: '2025-09-01' },
+  { nom: 'Diffuseur de parfum a batonnets', prix: 16500, achat: 8300, rotation: 4, seuil: 8, arrivee: '2025-09-01' },
+  { nom: 'Bougie parfumee Oud 180 g', prix: 13000, achat: 6400, rotation: 5, seuil: 10, arrivee: '2025-09-01' },
+  { nom: 'Eau de parfum Vanille Noire 100 mL', prix: 55000, achat: 32000, rotation: 6, seuil: 5, arrivee: '2026-02-02' },
+  { nom: 'Brume cheveux parfumee 150 mL', prix: 8900, achat: 4300, rotation: 7, seuil: 12, arrivee: '2026-02-02' },
+];
+
+// References arretees en cours de route : rupture durable chez le fournisseur,
+// gamme abandonnee. Le produit sort du catalogue mais son historique de ventes
+// reste intact, et c'est exactement ce que le systeme doit savoir faire.
+const PRODUITS_ARRETES = [
+  { nom: 'Eau de toilette Vanille Douce 75 mL', date: '2025-08-12', motif: 'Gamme abandonnee par le fabricant' },
+  { nom: 'Vernis a ongles longue tenue', date: '2025-11-03', motif: 'Rotation trop faible, place rendue au rayon soin' },
+  { nom: 'Lingettes demaquillantes x25', date: '2026-04-21', motif: 'Rupture durable chez le fournisseur' },
 ];
 
 const CATEGORIES_DEPENSE = [
@@ -304,5 +347,5 @@ const DOCUMENTS_TYPES = [
 
 module.exports = {
   DEBUT, ETABLISSEMENT, FONCTIONS, EMPLOYES, FOURNISSEURS,
-  PRODUITS, CATEGORIES_DEPENSE, DOCUMENTS_TYPES,
+  PRODUITS, PRODUITS_ARRETES, CATEGORIES_DEPENSE, DOCUMENTS_TYPES,
 };
