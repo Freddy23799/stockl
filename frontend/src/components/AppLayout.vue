@@ -57,9 +57,16 @@ const sections = computed(() => [
     ],
   },
   {
+    titre: 'Personnel',
+    items: [
+      ...(modules.employes ? [{ to: '/employes', label: 'Employes', icon: 'idCard' }] : []),
+      ...(modules.paie ? [{ to: '/paie', label: 'Paie', icon: 'wallet' }] : []),
+      ...(modules.ventes ? [{ to: '/vendeuses', label: 'Vendeuses', icon: 'users' }] : []),
+    ],
+  },
+  {
     titre: 'Administration',
     items: [
-      ...(modules.ventes ? [{ to: '/vendeuses', label: 'Vendeuses', icon: 'users' }] : []),
       { to: '/historique', label: 'Historique', icon: 'history' },
       { to: '/parametres', label: 'Parametres', icon: 'settings' },
     ],

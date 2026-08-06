@@ -12,6 +12,7 @@ import Modal from '../components/ui/Modal.vue'
 import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import Icon from '../components/ui/Icon.vue'
+import ScannerDocument from '../components/ui/ScannerDocument.vue'
 
 const modules = useModulesStore()
 const auth = useAuthStore()
@@ -30,6 +31,7 @@ const onglets = computed(() => [
   { id: 'etablissement', label: 'Etablissement', icon: 'building' },
   { id: 'modules', label: 'Modules', icon: 'toggle' },
   { id: 'securite', label: 'Securite', icon: 'shield' },
+  { id: 'verification', label: 'Verification', icon: 'scan' },
   { id: 'comptes', label: 'Comptes', icon: 'users', count: utilisateurs.value.length },
 ])
 
@@ -165,7 +167,25 @@ const DESCRIPTION_MODULE = {
     titre: 'Depenses',
     desc: 'Saisie des charges hors marchandise et leur deduction du bilan net.',
   },
+  module_employes: {
+    titre: 'Employes',
+    desc: 'Dossiers du personnel : identite, historique de carriere, pieces justificatives. '
+      + 'Les vendeuses s\'y rattachent : sans ce module, aucun nouveau code de vente ne peut etre attribue.',
+  },
+  module_paie: {
+    titre: 'Paie',
+    desc: 'Fiches de paie par periode, versements, recus a numero unique et statistiques. '
+      + 'S\'appuie sur les fiches employes.',
+  },
+  module_badges: {
+    titre: 'Badges',
+    desc: 'Impression des cartes professionnelles avec photo, matricule et QR de verification.',
+  },
 }
+
+// Le scanner n'est monte qu'a l'ouverture : le composant demande la camera des
+// son montage, et la reclamer au chargement de la page serait intrusif.
+const scannerVisible = ref(false)
 
 const moduleEnCours = ref(null)
 const moduleADesactiver = ref(null)
@@ -704,6 +724,49 @@ async function copier(texte, libelle) {
         </div>
       </div>
 
+      <!-- ============ Verification ============ -->
+      <div v-show="ongletActif === 'verification'" class="card">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h2>Verifier un document</h2>
+            <p class="card-head-sub">
+              Badges et recus de paie portent un QR signe par le serveur. Le scanner dit s'il
+              a bien ete produit par ce systeme, et ce qu'il designe.
+            </p>
+          </div>
+        </div>
+        <div class="card-body stack" style="gap: 16px">
+          <div class="explication-scan">
+            <span class="stat-icon is-accent"><Icon name="qr" :size="17" /></span>
+            <div>
+              <p class="strong">Comment ca marche</p>
+              <p class="small muted mt-1">
+                Le QR ne contient pas seulement un numero : il porte une empreinte calculee
+                avec un secret qui ne quitte jamais le serveur. Personne ne peut donc en
+                fabriquer un, meme en connaissant le matricule inscrit dessus. Le scanner
+                verifie aussi que le document designe existe encore : un badge signe reste
+                mathematiquement valide apres le depart de son titulaire, ce qui serait
+                trompeur au controle d'une entree.
+              </p>
+            </div>
+          </div>
+
+          <div class="row wrap" style="gap: 10px">
+            <button type="button" class="primary" @click="scannerVisible = true">
+              <Icon name="scan" :size="15" /> Ouvrir le scanner
+            </button>
+          </div>
+
+          <p class="alert alert-info">
+            <Icon name="info" :size="16" />
+            <span>
+              La lecture se fait entierement sur cet appareil : aucune image n'est envoyee,
+              seul le texte du code lu part au serveur pour verification.
+            </span>
+          </p>
+        </div>
+      </div>
+
       <!-- ============ Comptes ============ -->
       <div v-show="ongletActif === 'comptes'" class="card">
         <div class="card-head">
@@ -925,6 +988,7 @@ async function copier(texte, libelle) {
       @confirm="confirmerDesactivation"
       @cancel="aDesactiver = null"
     />
+    <ScannerDocument v-if="scannerVisible" @close="scannerVisible = false" />
   </div>
 </template>
 

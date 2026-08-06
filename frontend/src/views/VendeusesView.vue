@@ -1,7 +1,8 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from 'vue'
-import api from '../api/client'
+import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
+import { useModulesStore } from '../stores/modules'
 import PageHeader from '../components/ui/PageHeader.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
@@ -12,6 +13,7 @@ import StatCard from '../components/ui/StatCard.vue'
 import Icon from '../components/ui/Icon.vue'
 
 const toasts = useToastStore()
+const modules = useModulesStore()
 
 const vendeuses = ref([])
 const loading = ref(true)
@@ -93,38 +95,81 @@ const formVisible = ref(false)
 const modeEdition = ref(false)
 const soumission = ref(false)
 const formErreur = ref('')
-const form = reactive({ id: null, nom: '', contact: '' })
+const form = reactive({ id: null, nom: '', contact: '', employe_id: null })
 const dernierCodeCree = ref(null)
+
+/* --- Choix de l'employe --------------------------------------------------- */
+
+// Une vendeuse est un ROLE attribue a un employe, pas une fiche autonome : sans
+// cela, la meme personne finirait par exister deux fois dans le systeme, avec
+// deux orthographes et deux numeros, et plus personne ne saurait laquelle fait foi.
+const employes = ref([])
+const chargementEmployes = ref(false)
+const rechercheEmploye = ref('')
+
+// Un employe qui a deja un code n'est pas proposable : le backend refuse le
+// doublon, autant ne pas le laisser cliquer dessus.
+const employesDisponibles = computed(() =>
+  employes.value.filter((e) => e.actif && !e.vendeuse_id)
+)
+
+const employesFiltres = computed(() => {
+  const q = rechercheEmploye.value.trim().toLowerCase()
+  if (!q) return employesDisponibles.value
+  return employesDisponibles.value.filter((e) =>
+    [e.prenom, e.nom, e.matricule, e.fonction].filter(Boolean).join(' ').toLowerCase().includes(q)
+  )
+})
+
+async function chargerEmployes() {
+  if (!modules.employes) return
+  chargementEmployes.value = true
+  try {
+    const { data } = await api.get('/employes')
+    employes.value = data
+  } catch {
+    // Non bloquant : le message d'absence d'employe couvre ce cas.
+  } finally {
+    chargementEmployes.value = false
+  }
+}
 
 function ouvrirCreation() {
   modeEdition.value = false
   formErreur.value = ''
   dernierCodeCree.value = null
-  Object.assign(form, { id: null, nom: '', contact: '' })
+  rechercheEmploye.value = ''
+  Object.assign(form, { id: null, nom: '', contact: '', employe_id: null })
   formVisible.value = true
+  chargerEmployes()
 }
 
 function ouvrirEdition(v) {
   modeEdition.value = true
   formErreur.value = ''
   dernierCodeCree.value = null
-  Object.assign(form, { id: v.id, nom: v.nom, contact: v.contact || '' })
+  Object.assign(form, { id: v.id, nom: v.nom, contact: v.contact || '', employe_id: v.employe_id || null })
   formVisible.value = true
 }
 
 async function soumettreForm() {
+  if (!modeEdition.value && !form.employe_id) {
+    formErreur.value = 'Choisissez l\'employe a qui attribuer ce role de vente.'
+    return
+  }
   soumission.value = true
   formErreur.value = ''
   try {
-    const payload = { nom: form.nom, contact: form.contact || null }
     if (modeEdition.value) {
+      const payload = { nom: form.nom, contact: form.contact || null }
       await api.put(`/vendeuses/${form.id}`, payload)
       formVisible.value = false
       toasts.succes(`"${payload.nom}" mis a jour`)
     } else {
-      const { data } = await api.post('/vendeuses', payload)
+      const { data } = await api.post('/vendeuses', { employe_id: form.employe_id })
       // La modale reste ouverte : le code genere ne s'affiche qu'une fois ici,
       // il faut pouvoir le lire et le copier avant de fermer.
+      form.nom = data.nom
       dernierCodeCree.value = data.code
     }
     await charger()
@@ -314,10 +359,88 @@ async function basculerActivation(v) {
         </p>
       </template>
 
+      <!-- En creation, on choisit un EMPLOYE : le role de vente s'attribue a
+           quelqu'un qui existe deja au personnel, plutot que de recreer une
+           fiche en double avec une autre orthographe du nom. -->
+      <form v-else-if="!modeEdition" id="form-vendeuse" @submit.prevent="soumettreForm">
+        <p class="small muted mb-3">
+          Le role de vente s'attribue a un employe. Son nom et son telephone sont repris
+          de sa fiche, et le code a six chiffres est genere automatiquement.
+        </p>
+
+        <div v-if="!employesDisponibles.length && !chargementEmployes" class="alert alert-warning">
+          <Icon name="warning" :size="16" />
+          <span>
+            <template v-if="!modules.employes">
+              Le module Employes est desactive : reactivez-le pour attribuer un role de vente.
+            </template>
+            <template v-else-if="employes.length">
+              Tous les employes en poste ont deja un code de vente.
+            </template>
+            <template v-else>
+              Aucun employe en poste. Creez d'abord une fiche employe.
+            </template>
+          </span>
+        </div>
+
+        <template v-else>
+          <div class="field">
+            <label>Rechercher un employe</label>
+            <div class="search">
+              <Icon name="search" :size="15" />
+              <input v-model="rechercheEmploye" type="search" placeholder="Nom, matricule, fonction..." />
+            </div>
+          </div>
+
+          <!-- Liste complete des employes, sans filtrer sur la fonction : une
+               gerante ou une stagiaire peut tenir la caisse un samedi sans que
+               sa fonction officielle soit "vendeuse". -->
+          <div class="field">
+            <label>Employe <span class="champ-requis">*</span></label>
+            <ul class="picker-employes">
+              <li v-for="e in employesFiltres" :key="e.id">
+                <button
+                  type="button"
+                  class="picker-employe"
+                  :class="{ 'is-active': form.employe_id === e.id }"
+                  @click="form.employe_id = e.id"
+                >
+                  <span class="avatar-mini">
+                    <img v-if="e.photo" :src="assetUrl(e.photo)" alt="" />
+                    <span v-else>{{ (e.prenom[0] || '') + (e.nom[0] || '') }}</span>
+                  </span>
+                  <span class="flex-1" style="min-width: 0; text-align: left">
+                    <span class="td-strong">{{ e.prenom }} {{ e.nom }}</span>
+                    <span class="small muted" style="display: block">
+                      <span class="mono">{{ e.matricule }}</span>
+                      <template v-if="e.fonction"> · {{ e.fonction }}</template>
+                    </span>
+                  </span>
+                  <Icon v-if="form.employe_id === e.id" name="check" :size="16" />
+                </button>
+              </li>
+              <li v-if="!employesFiltres.length" class="small muted" style="padding: 12px 14px">
+                Aucun employe ne correspond a cette recherche.
+              </li>
+            </ul>
+          </div>
+        </template>
+
+        <p v-if="formErreur" class="alert alert-danger">
+          <Icon name="alert" :size="16" /><span>{{ formErreur }}</span>
+        </p>
+      </form>
+
+      <!-- En modification, seul le contact reste ajustable ici : le nom vient de
+           la fiche employe et doit s'y modifier, pour ne pas diverger. -->
       <form v-else id="form-vendeuse" @submit.prevent="soumettreForm">
         <div class="field">
           <label>Nom</label>
           <input v-model="form.nom" placeholder="Prenom et nom" required />
+          <span v-if="form.employe_id" class="field-hint">
+            Repris de la fiche employe. Modifiez-le plutot depuis sa fiche pour que les
+            deux restent d'accord.
+          </span>
         </div>
         <div class="field">
           <label>Contact <span class="muted">(optionnel)</span></label>
@@ -393,4 +516,50 @@ async function basculerActivation(v) {
 @media (max-width: 480px) {
   .code-big { font-size: 30px; }
 }
+
+/* Selecteur d'employe : une liste deroulante native devient inutilisable des
+   qu'il y a trente employes homonymes ; une liste avec photo, matricule et
+   fonction se parcourt du regard. */
+.picker-employes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.picker-employe {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 0;
+  background: none;
+  text-align: left;
+}
+.picker-employes li + li .picker-employe { border-top: 1px solid var(--border); }
+.picker-employe:hover:not(:disabled) { background: var(--bg-subtle); border-color: transparent; }
+.picker-employe.is-active { background: var(--accent-soft); color: var(--accent-text); }
+
+.avatar-mini {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+.avatar-mini img { width: 100%; height: 100%; object-fit: cover; }
+
+.champ-requis { color: var(--danger); margin-left: 2px; }
 </style>
