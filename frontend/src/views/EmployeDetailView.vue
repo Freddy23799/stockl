@@ -149,7 +149,20 @@ async function envoyerPhoto(evenement) {
 
 const carriereVisible = ref(false)
 const carriereMode = ref('ajout')
-const carriere = reactive({ montant: '', fonction: '', date_debut: '', motif: '', changerFonction: false })
+const carriere = reactive({ montant: '', fonction_id: '', date_debut: '', motif: '', changerFonction: false })
+
+// Les fonctions proposees viennent de la table de reference : la saisie libre
+// recreerait les doublons d'orthographe que cette table existe pour empecher.
+const fonctions = ref([])
+
+async function chargerFonctions() {
+  try {
+    const { data } = await api.get('/employes/fonctions')
+    fonctions.value = data
+  } catch {
+    // Non bloquant : le champ reste vide et le formulaire le signale.
+  }
+}
 const carriereErreur = ref('')
 const carriereSoumission = ref(false)
 
@@ -163,12 +176,13 @@ function ouvrirCarriere(mode) {
   const courante = periodeCourante.value
   Object.assign(carriere, {
     montant: mode === 'correction' ? Number(courante?.montant ?? '') : '',
-    fonction: courante?.fonction || '',
+    fonction_id: courante?.fonction_id || '',
     date_debut: new Date().toISOString().slice(0, 10),
     motif: '',
     changerFonction: false,
   })
   carriereVisible.value = true
+  chargerFonctions()
 }
 
 async function soumettreCarriere() {
@@ -180,7 +194,7 @@ async function soumettreCarriere() {
         montant: Number(carriere.montant),
         // La fonction n'est envoyee que si on a demande a la changer : sinon le
         // serveur reprend celle de la periode qui se termine.
-        fonction: carriere.changerFonction ? carriere.fonction : undefined,
+        fonction_id: carriere.changerFonction ? Number(carriere.fonction_id) : undefined,
         date_debut: carriere.date_debut,
         motif: carriere.motif,
       })
@@ -188,7 +202,7 @@ async function soumettreCarriere() {
     } else {
       await api.put(`/employes/${route.params.id}/carriere/${periodeCourante.value.id}`, {
         montant: Number(carriere.montant),
-        fonction: carriere.changerFonction ? carriere.fonction : undefined,
+        fonction_id: carriere.changerFonction ? Number(carriere.fonction_id) : undefined,
         motif: carriere.motif,
       })
       toasts.succes('Periode en cours corrigee')
@@ -690,14 +704,10 @@ onMounted(charger)
             <input v-model="carriere.changerFonction" type="checkbox" style="width: auto" />
             <span>Changer aussi la fonction</span>
           </label>
-          <input
-            v-if="carriere.changerFonction"
-            v-model="carriere.fonction"
-            type="text"
-            maxlength="120"
-            placeholder="Nouvelle fonction"
-            class="mt-2"
-          />
+          <select v-if="carriere.changerFonction" v-model="carriere.fonction_id" class="mt-2">
+            <option value="" disabled>Choisir une fonction</option>
+            <option v-for="f in fonctions" :key="f.id" :value="f.id">{{ f.nom }}</option>
+          </select>
           <span v-else class="field-hint">
             Reste « {{ periodeCourante?.fonction || 'non definie' }} »
           </span>

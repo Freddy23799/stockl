@@ -5,8 +5,10 @@ import api, { assetUrl } from '../api/client'
 import { useModulesStore } from '../stores/modules'
 import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatDateCourt } from '../utils/format'
+import { telechargerDocument, nommerDocument } from '../utils/telecharger'
 import PageHeader from '../components/ui/PageHeader.vue'
 import BoutonExport from '../components/ui/BoutonExport.vue'
+import GestionFonctions from '../components/ui/GestionFonctions.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -39,12 +41,73 @@ const liste = computed(() => {
   const base = ongletActif.value === 'actifs' ? actifs.value : archives.value
   const q = recherche.value.trim().toLowerCase()
   return base.filter((e) => {
-    if (fonctionFiltre.value && e.fonction !== fonctionFiltre.value) return false
+    if (fonctionFiltre.value && e.fonction_id !== Number(fonctionFiltre.value)) return false
     if (!q) return true
+    // Nom, matricule, telephone et fonction : les quatre choses dont on dispose
+    // quand on cherche quelqu'un, y compris un matricule lu sur un badge.
     return [e.prenom, e.nom, e.matricule, e.telephone, e.fonction]
       .filter(Boolean).join(' ').toLowerCase().includes(q)
   })
 })
+
+/* --- Selection pour l'impression des badges ------------------------------- */
+
+// Les cartes plastifiees coutent cher : on doit pouvoir n'imprimer que celles
+// dont on a besoin, plutot qu'une planche de neuf pour en remplacer une.
+const selection = ref(new Set())
+
+const toutSelectionne = computed(() =>
+  liste.value.length > 0 && liste.value.every((e) => selection.value.has(e.id))
+)
+
+function basculerSelection(id) {
+  const copie = new Set(selection.value)
+  if (copie.has(id)) copie.delete(id)
+  else copie.add(id)
+  selection.value = copie
+}
+
+function basculerTout() {
+  if (toutSelectionne.value) {
+    // Ne deselectionne que ce qui est visible : un filtre actif ne doit pas
+    // effacer une selection faite avant de filtrer.
+    const copie = new Set(selection.value)
+    liste.value.forEach((e) => copie.delete(e.id))
+    selection.value = copie
+  } else {
+    const copie = new Set(selection.value)
+    liste.value.forEach((e) => copie.add(e.id))
+    selection.value = copie
+  }
+}
+
+function viderSelection() {
+  selection.value = new Set()
+}
+
+const idsSelection = computed(() => [...selection.value].join(','))
+
+async function imprimerSelection() {
+  const nombre = selection.value.size
+  await telechargerDocument('/exports/badges.pdf', {
+    params: { ids: idsSelection.value },
+    libelle: nombre === 1 ? 'Badge employe' : `Badges (${nombre} employes)`,
+    nomFichier: nommerDocument(nombre === 1 ? 'badge' : 'badges-employes'),
+  })
+}
+
+/* --- Fonctions ------------------------------------------------------------ */
+
+const fonctionsVisible = ref(false)
+
+async function rechargerFonctions() {
+  try {
+    const { data } = await api.get('/employes/fonctions')
+    fonctions.value = data
+  } catch {
+    // Non bloquant : la liste des fonctions reste celle du dernier chargement.
+  }
+}
 
 // La masse salariale ne compte que les employes en poste : inclure les archives
 // donnerait un total que l'on ne verse plus a personne.
@@ -75,7 +138,7 @@ async function charger() {
 
 const formVisible = ref(false)
 const form = reactive({
-  prenom: '', nom: '', fonction: '', salaire: '',
+  prenom: '', nom: '', fonction_id: '', salaire: '',
   telephone: '', email: '', date_embauche: new Date().toISOString().slice(0, 10),
   sexe: '', numero_cni: '', ville: '', type_contrat: '',
 })
@@ -88,7 +151,7 @@ const dernierCree = ref(null)
 
 function ouvrirForm() {
   Object.assign(form, {
-    prenom: '', nom: '', fonction: '', salaire: '',
+    prenom: '', nom: '', fonction_id: '', salaire: '',
     telephone: '', email: '', date_embauche: new Date().toISOString().slice(0, 10),
     sexe: '', numero_cni: '', ville: '', type_contrat: '',
   })
@@ -101,7 +164,11 @@ async function soumettre() {
   formErreur.value = ''
   soumission.value = true
   try {
-    const { data } = await api.post('/employes', { ...form, salaire: Number(form.salaire) })
+    const { data } = await api.post('/employes', {
+      ...form,
+      salaire: Number(form.salaire),
+      fonction_id: Number(form.fonction_id),
+    })
     dernierCree.value = data
     await charger()
   } catch (err) {
@@ -150,6 +217,9 @@ onMounted(charger)
           fichier="badges-employes"
           texte="Badges"
         />
+        <button type="button" @click="fonctionsVisible = true">
+          <Icon name="briefcase" :size="15" /> Fonctions
+        </button>
         <button type="button" class="primary" @click="ouvrirForm">
           <Icon name="userPlus" :size="15" /> Nouvel employe
         </button>
@@ -194,8 +264,8 @@ onMounted(charger)
         <div class="field" style="min-width: 170px; margin: 0">
           <select v-model="fonctionFiltre">
             <option value="">Toutes les fonctions</option>
-            <option v-for="f in fonctions" :key="f.fonction" :value="f.fonction">
-              {{ f.fonction }} ({{ f.effectif }})
+            <option v-for="f in fonctions" :key="f.id" :value="f.id">
+              {{ f.nom }} ({{ f.effectif }})
             </option>
           </select>
         </div>
@@ -236,6 +306,14 @@ onMounted(charger)
           <table class="table-cards">
             <thead>
               <tr>
+                <th v-if="modules.badges" class="col-selection">
+                  <input
+                    type="checkbox"
+                    :checked="toutSelectionne"
+                    title="Tout selectionner"
+                    @change="basculerTout"
+                  />
+                </th>
                 <th style="width: 84px">Matricule</th>
                 <th>Employe</th>
                 <th>Fonction</th>
@@ -245,7 +323,21 @@ onMounted(charger)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="e in liste" :key="e.id" class="ligne-cliquable" @click="ouvrirFiche(e)">
+              <tr
+                v-for="e in liste"
+                :key="e.id"
+                class="ligne-cliquable"
+                :class="{ 'est-selectionnee': selection.has(e.id) }"
+                @click="ouvrirFiche(e)"
+              >
+                <td v-if="modules.badges" data-label="" class="col-selection" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="selection.has(e.id)"
+                    :aria-label="`Selectionner ${e.prenom} ${e.nom}`"
+                    @change="basculerSelection(e.id)"
+                  />
+                </td>
                 <td data-label="Matricule">
                   <span class="matricule">{{ e.matricule }}</span>
                 </td>
@@ -292,6 +384,26 @@ onMounted(charger)
         </div>
       </div>
     </div>
+
+    <!-- Barre de selection : n'apparait que lorsqu'il y a quelque chose a
+         imprimer, et suit le defilement pour rester atteignable. -->
+    <div v-if="selection.size" class="barre-selection">
+      <span class="small">
+        <strong>{{ selection.size }}</strong> badge(s) selectionne(s)
+      </span>
+      <div class="row" style="gap: 8px">
+        <button type="button" class="btn-sm" @click="viderSelection">Tout deselectionner</button>
+        <button type="button" class="btn-sm primary" @click="imprimerSelection">
+          <Icon name="idCard" :size="14" /> Imprimer les badges
+        </button>
+      </div>
+    </div>
+
+    <GestionFonctions
+      v-if="fonctionsVisible"
+      @close="fonctionsVisible = false"
+      @change="rechargerFonctions"
+    />
 
     <!-- ============ Creation ============ -->
     <Modal v-if="formVisible" title="Nouvel employe" size="lg" @close="formVisible = false">
@@ -343,11 +455,18 @@ onMounted(charger)
           </div>
           <div class="field">
             <label>Fonction <span class="champ-requis">*</span></label>
-            <input v-model="form.fonction" type="text" required maxlength="120" list="liste-fonctions" />
-            <datalist id="liste-fonctions">
-              <option v-for="f in fonctions" :key="f.fonction" :value="f.fonction" />
-            </datalist>
-            <span class="field-hint">Vendeuse, magasinier, service entretien...</span>
+            <div class="row" style="gap: 7px">
+              <select v-model="form.fonction_id" required class="flex-1">
+                <option value="" disabled>Choisir une fonction</option>
+                <option v-for="f in fonctions" :key="f.id" :value="f.id">{{ f.nom }}</option>
+              </select>
+              <button type="button" class="icon-btn" title="Gerer les fonctions" @click="fonctionsVisible = true">
+                <Icon name="settings" :size="15" />
+              </button>
+            </div>
+            <span v-if="!fonctions.length" class="field-error">
+              Aucune fonction definie. Creez-en une avec le bouton ci-contre.
+            </span>
           </div>
           <div class="field">
             <label>Salaire mensuel <span class="champ-requis">*</span></label>
@@ -410,6 +529,32 @@ onMounted(charger)
 <style scoped>
 .ligne-cliquable { cursor: pointer; }
 .ligne-cliquable:hover { background: var(--bg-subtle); }
+.est-selectionnee { background: var(--accent-soft); }
+
+.col-selection { width: 38px; text-align: center; }
+.col-selection input { width: 16px; height: 16px; margin: 0; cursor: pointer; }
+
+/* Barre d'impression : ancree en bas, au-dessus de la navigation mobile pour ne
+   pas la recouvrir. */
+.barre-selection {
+  position: sticky;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--bg-card, #fff);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.14));
+}
+@media (max-width: 700px) {
+  .barre-selection { bottom: calc(var(--bottom-nav-h, 62px) + 10px); }
+}
 
 .matricule {
   display: inline-block;

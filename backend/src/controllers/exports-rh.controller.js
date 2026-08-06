@@ -51,23 +51,45 @@ function envoyerDocument(doc, res, nomFichier) {
 
 /* --- Badges --------------------------------------------------------------- */
 
-// Un seul employe (`?employe_id=`) ou toute la planche. Imprimer neuf badges
-// pour n'en remplacer qu'un gaspillerait huit cartes.
+// Une selection (`?ids=3,7,12`), un seul employe (`?employe_id=`) ou toute la
+// planche. Imprimer neuf badges pour n'en remplacer qu'un gaspillerait huit
+// cartes, et les cartes plastifiees coutent cher.
 async function badges(req, res) {
   const { etablissement } = await contexteDocument(req);
-  const { employe_id } = req.query;
+  const { employe_id, ids } = req.query;
 
   const conditions = ['e.actif = true'];
   const params = [];
-  if (employe_id) {
+
+  if (ids) {
+    // Les identifiants arrivent en chaine : on les convertit et on ecarte tout
+    // ce qui n'est pas un entier, plutot que de laisser passer une valeur qui
+    // ferait echouer la requete.
+    const liste = String(ids)
+      .split(',')
+      .map((v) => Number(String(v).trim()))
+      .filter((v) => Number.isInteger(v) && v > 0);
+
+    if (!liste.length) {
+      return res.status(400).json({ message: 'Aucun employe valide dans la selection' });
+    }
+    params.push(liste);
+    conditions.push(`e.id = ANY($${params.length}::int[])`);
+  } else if (employe_id) {
     params.push(employe_id);
     conditions.push(`e.id = $${params.length}`);
   }
 
   const { rows } = await pool.query(
-    `SELECT e.id, e.matricule, e.prenom, e.nom, e.photo, e.date_embauche, c.fonction
+    // `f.nom` d'abord, `c.fonction` en repli. Un badge est un document VIVANT :
+    // reimprime aujourd'hui, il doit porter le titre en vigueur aujourd'hui. Le
+    // libelle fige dans la periode de carriere sert aux bulletins de paie, qui
+    // eux doivent rester conformes a ce qui a ete verse a l'epoque.
+    `SELECT e.id, e.matricule, e.prenom, e.nom, e.photo, e.date_embauche,
+            COALESCE(f.nom, c.fonction) AS fonction
        FROM employes e
        LEFT JOIN employes_carriere c ON c.employe_id = e.id AND c.date_fin IS NULL
+       LEFT JOIN fonctions f ON f.id = c.fonction_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY e.nom, e.prenom`,
     params
@@ -78,7 +100,7 @@ async function badges(req, res) {
   }
 
   const doc = await creerPlancheBadges(rows, etablissement);
-  const nom = employe_id ? `badge-${rows[0].matricule}` : 'badges-employes';
+  const nom = rows.length === 1 ? `badge-${rows[0].matricule}` : 'badges-employes';
   envoyerDocument(doc, res, nommerFichier(nom));
 }
 
@@ -167,9 +189,11 @@ async function employes(req, res) {
   const inclureInactifs = req.query.inclure_inactifs === 'true';
 
   const { rows } = await pool.query(
-    `SELECT e.*, c.montant AS salaire, c.fonction, c.date_debut AS salaire_depuis
+    `SELECT e.*, c.montant AS salaire, COALESCE(f.nom, c.fonction) AS fonction,
+            c.date_debut AS salaire_depuis
        FROM employes e
        LEFT JOIN employes_carriere c ON c.employe_id = e.id AND c.date_fin IS NULL
+       LEFT JOIN fonctions f ON f.id = c.fonction_id
       ${inclureInactifs ? '' : 'WHERE e.actif = true'}
       ORDER BY e.actif DESC, e.nom, e.prenom`
   );
@@ -332,9 +356,11 @@ async function verifier(req, res) {
 
   if (resultat.type === 'BADGE') {
     const { rows } = await pool.query(
-      `SELECT e.matricule, e.prenom, e.nom, e.photo, e.actif, e.date_embauche, c.fonction
+      `SELECT e.matricule, e.prenom, e.nom, e.photo, e.actif, e.date_embauche,
+              COALESCE(f.nom, c.fonction) AS fonction
          FROM employes e
          LEFT JOIN employes_carriere c ON c.employe_id = e.id AND c.date_fin IS NULL
+         LEFT JOIN fonctions f ON f.id = c.fonction_id
         WHERE e.matricule = $1`,
       [resultat.identifiant]
     );

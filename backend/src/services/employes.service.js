@@ -61,14 +61,32 @@ async function historiqueCarriere(client, employeId) {
 }
 
 /**
+ * Resout une fonction depuis son identifiant et renvoie le couple (id, libelle).
+ *
+ * Le libelle est recopie dans la periode a cote de la reference : renommer une
+ * fonction plus tard ne doit pas reecrire les bulletins deja edites.
+ */
+async function resoudreFonction(client, fonctionId) {
+  if (!fonctionId) return null;
+  const { rows } = await client.query('SELECT id, nom, actif FROM fonctions WHERE id = $1', [fonctionId]);
+  return rows[0] || null;
+}
+
+/**
  * Ouvre une nouvelle periode de carriere et ferme la precedente.
  *
- * `fonction` est facultative : la garder inchangee est le cas courant d'une
+ * `fonctionId` est facultatif : la garder inchangee est le cas courant d'une
  * simple augmentation. On reprend alors celle de la periode qui se termine.
  */
-async function ajouterPeriode(client, { employeId, montant, fonction, dateDebut, motif, auteurId }) {
+async function ajouterPeriode(client, { employeId, montant, fonctionId, fonction, dateDebut, motif, auteurId }) {
   const debut = dateDebut || new Date().toISOString().slice(0, 10);
   const courante = await carriereCourante(client, employeId);
+
+  // La fonction vient de la table de reference. Le libelle libre n'est accepte
+  // qu'en repli, pour les periodes reprises d'avant la migration.
+  const reference = await resoudreFonction(client, fonctionId);
+  const libelle = reference?.nom || fonction || courante?.fonction || 'Non precisee';
+  const identifiant = reference?.id ?? (fonctionId ? null : courante?.fonction_id ?? null);
 
   if (courante) {
     // Une nouvelle periode qui commencerait avant ou le jour meme du debut de
@@ -89,9 +107,9 @@ async function ajouterPeriode(client, { employeId, montant, fonction, dateDebut,
   }
 
   const { rows } = await client.query(
-    `INSERT INTO employes_carriere (employe_id, montant, fonction, date_debut, motif, auteur_id)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [employeId, montant, fonction || courante?.fonction || 'Non precisee', debut, motif || null, auteurId]
+    `INSERT INTO employes_carriere (employe_id, montant, fonction, fonction_id, date_debut, motif, auteur_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [employeId, montant, libelle, identifiant, debut, motif || null, auteurId]
   );
 
   await logAudit(client, {
@@ -107,7 +125,7 @@ async function ajouterPeriode(client, { employeId, montant, fonction, dateDebut,
 }
 
 /** Rectifie la periode en cours. Refuse toute periode deja fermee. */
-async function corrigerPeriode(client, { periodeId, montant, fonction, motif, auteurId }) {
+async function corrigerPeriode(client, { periodeId, montant, fonctionId, fonction, motif, auteurId }) {
   const { rows: existantes } = await client.query(
     'SELECT * FROM employes_carriere WHERE id = $1',
     [periodeId]
@@ -116,13 +134,16 @@ async function corrigerPeriode(client, { periodeId, montant, fonction, motif, au
   if (!periode) return null;
   if (periode.date_fin !== null) throw new PeriodeFermeeError();
 
+  const reference = await resoudreFonction(client, fonctionId);
+
   const { rows } = await client.query(
     `UPDATE employes_carriere
         SET montant = COALESCE($1, montant),
             fonction = COALESCE($2, fonction),
-            motif = COALESCE($3, motif)
-      WHERE id = $4 RETURNING *`,
-    [montant ?? null, fonction || null, motif || null, periodeId]
+            fonction_id = COALESCE($3, fonction_id),
+            motif = COALESCE($4, motif)
+      WHERE id = $5 RETURNING *`,
+    [montant ?? null, reference?.nom || fonction || null, reference?.id ?? null, motif || null, periodeId]
   );
 
   await logAudit(client, {
@@ -158,6 +179,7 @@ async function salaireALaDate(client, employeId, date) {
 
 module.exports = {
   carriereCourante,
+  resoudreFonction,
   historiqueCarriere,
   ajouterPeriode,
   corrigerPeriode,

@@ -5,11 +5,18 @@ const { requireModule } = require('../middleware/module.middleware');
 const { uploadEmployePhoto, uploadDocumentFichiers, gererErreursUpload } = require('../middleware/upload.middleware');
 const employes = require('../controllers/employes.controller');
 const documents = require('../controllers/documents.controller');
+const fonctions = require('../controllers/fonctions.controller');
 
 router.use(requireAuth, requireRole('admin'), requireModule('employes'));
 
+// Les fonctions sont une reference du module Employes : elles vivent sous la
+// meme route, avant `/:id` pour que "fonctions" ne soit pas pris pour un id.
+router.get('/fonctions', fonctions.list);
+router.post('/fonctions', fonctions.create);
+router.put('/fonctions/:id', fonctions.update);
+router.delete('/fonctions/:id', fonctions.supprimer);
+
 router.get('/', employes.list);
-router.get('/fonctions', employes.fonctions);
 router.get('/:id', employes.getById);
 router.post('/', employes.create);
 router.put('/:id', employes.update);

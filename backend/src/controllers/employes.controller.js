@@ -43,7 +43,7 @@ function normaliser(colonne, valeur) {
 /* --- Lecture -------------------------------------------------------------- */
 
 async function list(req, res) {
-  const { recherche, inclure_inactifs, fonction } = req.query;
+  const { recherche, inclure_inactifs, fonction_id: fonctionId } = req.query;
   const conditions = [];
   const params = [];
 
@@ -51,14 +51,17 @@ async function list(req, res) {
 
   if (recherche) {
     params.push(`%${String(recherche).trim()}%`);
+    // La recherche porte sur ce dont on dispose quand on cherche quelqu'un :
+    // son nom, son matricule lu sur un badge, son telephone, ou sa fonction.
     conditions.push(
       `(e.prenom ILIKE $${params.length} OR e.nom ILIKE $${params.length}
-        OR e.matricule ILIKE $${params.length} OR e.telephone ILIKE $${params.length})`
+        OR e.matricule ILIKE $${params.length} OR e.telephone ILIKE $${params.length}
+        OR c.fonction ILIKE $${params.length})`
     );
   }
-  if (fonction) {
-    params.push(fonction);
-    conditions.push(`c.fonction = $${params.length}`);
+  if (fonctionId) {
+    params.push(fonctionId);
+    conditions.push(`c.fonction_id = $${params.length}`);
   }
 
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -66,11 +69,15 @@ async function list(req, res) {
   // La carriere en cours est jointe ici plutot que demandee ligne par ligne :
   // une liste de deux cents employes ne doit pas declencher deux cents requetes.
   const { rows } = await pool.query(
-    `SELECT e.*, c.montant AS salaire_actuel, c.fonction, c.date_debut AS salaire_depuis,
+    // Vue de l'etat courant : le titre affiche suit le renommage d'une fonction.
+    // Les historiques (carriere, bulletins) gardent le libelle d'epoque.
+    `SELECT e.*, c.montant AS salaire_actuel, COALESCE(f.nom, c.fonction) AS fonction,
+            c.date_debut AS salaire_depuis, c.fonction_id,
             (SELECT count(*)::int FROM employes_documents d WHERE d.employe_id = e.id) AS nombre_documents,
             v.id AS vendeuse_id, v.code AS vendeuse_code
        FROM employes e
        LEFT JOIN employes_carriere c ON c.employe_id = e.id AND c.date_fin IS NULL
+       LEFT JOIN fonctions f ON f.id = c.fonction_id
        LEFT JOIN vendeuses v ON v.employe_id = e.id
        ${where}
        ORDER BY e.actif DESC, e.nom, e.prenom`,
@@ -81,10 +88,12 @@ async function list(req, res) {
 
 async function getById(req, res) {
   const { rows } = await pool.query(
-    `SELECT e.*, c.montant AS salaire_actuel, c.fonction, c.date_debut AS salaire_depuis,
+    `SELECT e.*, c.montant AS salaire_actuel, COALESCE(f.nom, c.fonction) AS fonction,
+            c.fonction_id, c.date_debut AS salaire_depuis,
             v.id AS vendeuse_id, v.code AS vendeuse_code, v.actif AS vendeuse_active
        FROM employes e
        LEFT JOIN employes_carriere c ON c.employe_id = e.id AND c.date_fin IS NULL
+       LEFT JOIN fonctions f ON f.id = c.fonction_id
        LEFT JOIN vendeuses v ON v.employe_id = e.id
       WHERE e.id = $1`,
     [req.params.id]
@@ -115,25 +124,17 @@ async function getById(req, res) {
   }
 }
 
-/** Fonctions deja utilisees, pour proposer une liste plutot qu'un champ libre. */
-async function fonctions(req, res) {
-  const { rows } = await pool.query(
-    `SELECT fonction, count(*)::int AS effectif
-       FROM employes_carriere WHERE date_fin IS NULL
-      GROUP BY fonction ORDER BY effectif DESC, fonction`
-  );
-  res.json(rows);
-}
-
 /* --- Ecriture ------------------------------------------------------------- */
 
 async function create(req, res) {
-  const { prenom, nom, salaire, fonction } = req.body;
+  const { prenom, nom, salaire, fonction_id: fonctionId } = req.body;
   if (!prenom?.trim() || !nom?.trim()) {
     return res.status(400).json({ message: 'Le prenom et le nom sont requis' });
   }
-  if (!fonction?.trim()) {
-    return res.status(400).json({ message: 'La fonction est requise' });
+  // La fonction vient de la table de reference : accepter du texte libre
+  // recreerait les doublons que cette table existe pour empecher.
+  if (!fonctionId) {
+    return res.status(400).json({ message: 'Choisissez une fonction dans la liste' });
   }
   if (salaire === undefined || salaire === null || Number(salaire) < 0) {
     return res.status(400).json({ message: 'Le salaire est requis et doit etre positif ou nul' });
@@ -164,7 +165,7 @@ async function create(req, res) {
     await ajouterPeriode(client, {
       employeId: employe.id,
       montant: salaire,
-      fonction: fonction.trim(),
+      fonctionId,
       // `date_embauche` est deja une chaine 'AAAA-MM-JJ' : les colonnes DATE ne
       // passent plus par un objet Date, qui decalait le jour (voir config/db.js).
       dateDebut: employe.date_embauche,
@@ -176,8 +177,8 @@ async function create(req, res) {
       typeOperation: 'employe_creation',
       entiteId: employe.id,
       utilisateurId: req.user.id,
-      details: { matricule, nom_complet: `${employe.prenom} ${employe.nom}`, fonction: fonction.trim() },
-      apres: { matricule, prenom: employe.prenom, nom: employe.nom, salaire, fonction: fonction.trim() },
+      details: { matricule, nom_complet: `${employe.prenom} ${employe.nom}` },
+      apres: { matricule, prenom: employe.prenom, nom: employe.nom, salaire },
     });
 
     await client.query('COMMIT');
@@ -295,7 +296,7 @@ function setActif(actif) {
 /* --- Carriere ------------------------------------------------------------- */
 
 async function ajouterCarriere(req, res) {
-  const { montant, fonction, date_debut, motif } = req.body;
+  const { montant, fonction_id: fonctionId, date_debut, motif } = req.body;
   if (montant === undefined || Number(montant) < 0) {
     return res.status(400).json({ message: 'Le montant est requis et doit etre positif ou nul' });
   }
@@ -306,7 +307,7 @@ async function ajouterCarriere(req, res) {
     const periode = await ajouterPeriode(client, {
       employeId: Number(req.params.id),
       montant,
-      fonction,
+      fonctionId,
       dateDebut: date_debut,
       motif,
       auteurId: req.user.id,
@@ -325,14 +326,14 @@ async function ajouterCarriere(req, res) {
 }
 
 async function corrigerCarriere(req, res) {
-  const { montant, fonction, motif } = req.body;
+  const { montant, fonction_id: fonctionId, motif } = req.body;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const periode = await corrigerPeriode(client, {
       periodeId: Number(req.params.periodeId),
       montant,
-      fonction,
+      fonctionId,
       motif,
       auteurId: req.user.id,
     });
@@ -392,7 +393,7 @@ async function uploadPhoto(req, res) {
 }
 
 module.exports = {
-  list, getById, fonctions, create, update,
+  list, getById, create, update,
   archiver: setActif(false), reactiver: setActif(true),
   ajouterCarriere, corrigerCarriere, uploadPhoto,
   CHAMPS_MODIFIABLES,
