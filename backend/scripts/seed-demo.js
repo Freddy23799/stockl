@@ -307,12 +307,17 @@ async function creerProduits(client, adminId, photos) {
       `INSERT INTO produits (nom, prix_vente, unite_stock, unite_achat, facteur_conversion,
                              seuil_alerte, photo, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) RETURNING *`,
-      [p.nom, p.prix, 'piece', 'carton', 12, p.seuil, photo, `${date}T10:00:00`]
+      [p.nom, p.prix, p.unite || 'piece', p.uniteAchat || 'carton', p.facteur || 12,
+        p.seuil, photo, `${date}T10:00:00`]
     );
     liste.push({ ...rows[0], config: p, stock: 0 });
     await audit(client, {
       type: 'produit_creation', entiteId: rows[0].id, utilisateurId: adminId, date: `${date}T10:00:00`,
-      details: { nom: p.nom }, apres: { nom: p.nom, prix_vente: p.prix, unite_stock: 'piece' },
+      details: { nom: p.nom },
+      apres: {
+        nom: p.nom, prix_vente: p.prix, unite_stock: p.unite || 'piece',
+        unite_achat: p.uniteAchat || 'carton', facteur_conversion: p.facteur || 12,
+      },
     });
   }
   log(`Produits : ${liste.length}`);
@@ -352,9 +357,13 @@ async function entree(client, produit, quantite, coutTotal, fournisseurId, horod
   );
   await audit(client, {
     type: 'entree_stock', entiteId: produit.id, utilisateurId: adminId, date: horodatage,
-    details: { produit_nom: produit.nom, quantite_achat: quantite / 12, cout_achat_total: coutTotal },
-    avant: { quantite_stock: stockAvant, cout_moyen_pondere: cmpAvant, unite_stock: 'piece' },
-    apres: { quantite_stock: produit.stock, cout_moyen_pondere: produit.cmp, unite_stock: 'piece' },
+    details: {
+      produit_nom: produit.nom,
+      quantite_achat: quantite / (produit.config.facteur || 12),
+      cout_achat_total: coutTotal,
+    },
+    avant: { quantite_stock: stockAvant, cout_moyen_pondere: cmpAvant, unite_stock: produit.unite_stock },
+    apres: { quantite_stock: produit.stock, cout_moyen_pondere: produit.cmp, unite_stock: produit.unite_stock },
   });
 }
 
@@ -416,8 +425,8 @@ async function ajustement(client, produit, quantiteCible, motif, note, horodatag
       produit_nom: produit.nom, motif, note, ecart,
       valeur_ecart: Math.abs(ecart) * coutUnitaire,
     },
-    avant: { quantite_stock: avant, unite_stock: 'piece' },
-    apres: { quantite_stock: quantiteCible, unite_stock: 'piece' },
+    avant: { quantite_stock: avant, unite_stock: produit.unite_stock },
+    apres: { quantite_stock: quantiteCible, unite_stock: produit.unite_stock },
   });
 }
 
@@ -438,7 +447,16 @@ async function vente(client, produits, vendeusesActives, horodatage, adminId) {
     const poids = disponibles.reduce((s, p) => s + p.config.rotation, 0);
     let tirage = alea() * poids;
     const produit = disponibles.find((p) => (tirage -= p.config.rotation) <= 0) || disponibles[0];
-    const quantite = chance(0.78) ? 1 : entre(2, 3);
+
+    // La quantite depend de l'unite de vente. Un flacon se vend a la piece,
+    // mais un parfum en vrac se sert au volume et un encens au poids : vendre
+    // "1 mL" d'essence ou "1 g" de bakhour n'aurait aucun sens, et rendrait les
+    // quantites des rapports illisibles.
+    let quantite;
+    if (produit.unite_stock === 'mL') quantite = parmi([10, 15, 20, 25, 30, 50, 50, 100]);
+    else if (produit.unite_stock === 'g') quantite = parmi([20, 25, 50, 50, 100, 100, 250]);
+    else quantite = chance(0.78) ? 1 : entre(2, 3);
+
     if (produit.stock < (choisis.get(produit)?.quantite || 0) + quantite) continue;
     const existant = choisis.get(produit);
     if (existant) existant.quantite += quantite;
@@ -551,8 +569,8 @@ async function retourClient(client, produit, quantite, horodatage, adminId) {
       produit_nom: produit.nom, motif: 'retour_client', ecart: quantite,
       valeur_ecart: quantite * (produit.cmp || 0),
     },
-    avant: { quantite_stock: avant, unite_stock: 'piece' },
-    apres: { quantite_stock: produit.stock, unite_stock: 'piece' },
+    avant: { quantite_stock: avant, unite_stock: produit.unite_stock },
+    apres: { quantite_stock: produit.stock, unite_stock: produit.unite_stock },
   });
 }
 
@@ -624,6 +642,22 @@ async function simuler(client, contexte) {
       }
     }
 
+    // Promotions et destockage : les prix ne montent pas toujours. On solde ce
+    // qui dort en rayon, et on casse les prix avant les fetes. Sans cela,
+    // l'historique des prix ne raconte qu'une inflation continue, ce qui ne
+    // ressemble a aucun commerce.
+    if (date.getDate() === 2 && chance(0.3)) {
+      // Les articles a faible rotation et bien approvisionnes sont les premiers
+      // soldes : c'est exactement le raisonnement d'un gerant devant son stock.
+      const dormants = catalogue.filter((p) => p.config.rotation <= 5 && p.stock > p.config.seuil * 2);
+      for (const produit of dormants) {
+        if (!chance(0.35)) continue;
+        const baisse = 1 - (0.08 + alea() * 0.14);
+        if (await changerPrix(client, produit, produit.prix_vente * baisse,
+          heureOuvrable(date, 8, 2), adminId)) nbPrix += 1;
+      }
+    }
+
     // Retrait d'une reference du catalogue.
     for (const [nom, arret] of arrets) {
       if (arret.date !== cle) continue;
@@ -651,8 +685,12 @@ async function simuler(client, contexte) {
       if (produit.stock > produit.config.seuil * 1.6) continue;
       if (joursDepuisFin < 55 && produit.id % 5 === 0) continue;
       if (!chance(0.5)) continue;
-      const cartons = entre(2, 6);
-      const quantite = cartons * 12;
+      // On commande en unites d'achat : deux a six cartons, mais rarement plus
+      // d'un ou deux bidons de cinq litres. Le facteur de conversion fait le
+      // reste - c'est exactement ce que fait la saisie d'une entree de stock.
+      const facteur = produit.config.facteur || 12;
+      const unitesAchat = facteur >= 1000 ? entre(1, 2) : (facteur >= 48 ? entre(1, 3) : entre(2, 6));
+      const quantite = unitesAchat * facteur;
       // Le prix d'achat derive legerement au fil des mois, comme un vrai
       // approvisionnement soumis au change et au transport.
       const derive = 1 + (alea() - 0.42) * 0.18;
@@ -690,7 +728,10 @@ async function simuler(client, contexte) {
     // Retour client : environ une fois tous les dix jours.
     if (chance(0.1) && catalogue.length) {
       const produit = parmi(catalogue);
-      await retourClient(client, produit, chance(0.85) ? 1 : 2, heureOuvrable(date, 10, 8), adminId);
+      const quantiteRetour = produit.unite_stock === 'piece'
+        ? (chance(0.85) ? 1 : 2)
+        : parmi([10, 20, 25, 50]);
+      await retourClient(client, produit, quantiteRetour, heureOuvrable(date, 10, 8), adminId);
       nbRetours += 1;
     }
 
@@ -698,19 +739,30 @@ async function simuler(client, contexte) {
     if (chance(0.14) && catalogue.length) {
       const produit = parmi(catalogue.filter((p) => p.stock > 3) || catalogue);
       if (produit && produit.stock > 3) {
+        // Une casse porte sur un flacon, mais un renversement de vrac se compte
+        // en dizaines de millilitres.
+        const enVrac = produit.unite_stock !== 'piece';
+        const unites = (min, max) => (enVrac ? parmi([15, 25, 40, 60, 100]) : entre(min, max));
         const cas = parmi([
-          { motif: 'casse', note: 'Flacon brise lors de la mise en rayon', perte: entre(1, 2) },
-          { motif: 'casse', note: 'Carton tombe a la reception', perte: entre(1, 3) },
-          { motif: 'perte', note: 'Article perime retire de la vente', perte: 1 },
-          { motif: 'vol', note: 'Disparition constatee en fin de journee', perte: 1 },
-          { motif: 'inventaire', note: 'Ecart constate au comptage des rayons', perte: entre(1, 2) },
-          { motif: 'correction', note: 'Erreur de saisie sur une entree precedente', perte: entre(1, 2) },
-          { motif: 'vol', note: 'Vol a l\'etalage constate sur les images de surveillance', perte: entre(1, 2) },
-          { motif: 'casse', note: 'Renverse par un client en rayon', perte: 1 },
+          { motif: 'casse', note: 'Flacon brise lors de la mise en rayon', perte: unites(1, 2) },
+          { motif: 'casse', note: 'Carton tombe a la reception', perte: unites(1, 3) },
+          { motif: 'perte', note: 'Article perime retire de la vente', perte: unites(1, 1) },
+          { motif: 'vol', note: 'Disparition constatee en fin de journee', perte: unites(1, 1) },
+          { motif: 'inventaire', note: 'Ecart constate au comptage des rayons', perte: unites(1, 2) },
+          { motif: 'correction', note: 'Erreur de saisie sur une entree precedente', perte: unites(1, 2) },
+          { motif: 'vol', note: 'Vol a l\'etalage constate sur les images de surveillance', perte: unites(1, 2) },
+          { motif: 'casse', note: 'Renverse par un client en rayon', perte: unites(1, 1) },
+          { motif: 'perte', note: 'Fuite du bidon en reserve', perte: unites(1, 2) },
         ]);
-        await ajustement(client, produit, produit.stock - cas.perte, cas.motif, cas.note,
-          heureOuvrable(date, 17, 2), adminId);
-        nbAjustements += 1;
+        // La perte est bornee au stock reellement present : un renversement de
+        // vrac chiffre a cent millilitres sur un fond de bidon qui n'en contient
+        // que trente rendrait le stock negatif.
+        const perte = Math.min(cas.perte, Math.max(0, produit.stock - 1));
+        if (perte > 0) {
+          await ajustement(client, produit, produit.stock - perte, cas.motif, cas.note,
+            heureOuvrable(date, 17, 2), adminId);
+          nbAjustements += 1;
+        }
       }
     }
 
