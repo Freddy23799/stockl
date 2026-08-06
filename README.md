@@ -112,15 +112,22 @@ sur le serveur : le prochain deploiement s'en charge.
 |---|---|
 | *(non defini)* | Comportement decrit ci-dessus |
 | `non` | N'amorce jamais rien (base de dev qu'on veut garder vide) |
-| `forcer` | Amorce **meme si la base contient des donnees** — les efface |
-| `forcer-2`, `forcer-mars`... | Idem, pour forcer une nouvelle fois plus tard |
+| `completer` | Pose le jeu **a cote** de ce qui existe, sans rien effacer |
+| `forcer` | Pose le jeu **apres avoir tout efface** |
+| `completer-2`, `forcer-mars`... | Idem, pour agir une nouvelle fois plus tard |
 
-Le forcage n'agit qu'**une seule fois par valeur**, et c'est essentiel : la
-variable se regle dans la console de l'hebergeur, ou elle reste en place tant
-qu'on ne l'a pas retiree. Si elle agissait a chaque lecture, un service qui se
-met en veille toutes les quinze minutes rejouerait le remplissage a chaque
-reveil, effacant le travail reel saisi entre temps. La valeur employee est donc
-conservee dans le marqueur ; pour forcer a nouveau, on en ecrit une differente.
+`completer` est le bon reglage quand la base porte deja quelques fiches de test
+qu'on prefere garder : les fonctions homonymes sont reutilisees au lieu d'etre
+dupliquees, et les identifiants ne repartent pas de 1 — sans importance, tout le
+remplissage travaille avec les identifiants reellement rendus par les `INSERT`.
+
+Ces deux reglages n'agissent qu'**une seule fois par valeur**, et c'est
+essentiel : la variable se regle dans la console de l'hebergeur, ou elle reste
+en place tant qu'on ne l'a pas retiree. Si elle agissait a chaque lecture, un
+service qui se met en veille toutes les quinze minutes rejouerait le
+remplissage a chaque reveil, effacant le travail reel saisi entre temps. La
+valeur employee est donc conservee dans le marqueur ; pour agir a nouveau, on en
+ecrit une differente.
 
 Les photos du jeu (produits, portraits, pieces des dossiers) sont versionnees
 dans `backend/seed-assets/photos/`, et non telechargees au demarrage. Deux

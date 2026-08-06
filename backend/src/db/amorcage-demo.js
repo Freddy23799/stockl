@@ -48,9 +48,12 @@ const TABLES_METIER = ['produits', 'ventes', 'employes', 'fournisseurs', 'vendeu
 /**
  * Reglage facultatif, absent en fonctionnement normal :
  *
- *   non       n'amorce jamais rien (base de developpement qu'on veut garder vide)
- *   forcer    amorce MEME SI la base contient deja des donnees - DESTRUCTIF
- *   forcer-2, forcer-mars...  idem, pour forcer une nouvelle fois plus tard
+ *   non         n'amorce jamais rien (base de dev qu'on veut garder vide)
+ *   completer   pose le jeu A COTE de ce qui existe, sans rien effacer
+ *   forcer      pose le jeu APRES avoir tout efface - DESTRUCTIF
+ *
+ * Les deux derniers acceptent un suffixe (`completer-2`, `forcer-mars`) pour
+ * agir une nouvelle fois plus tard : voir JETON_FORCAGE.
  */
 const REGLAGE = (process.env.AMORCAGE_DEMO || '').trim().toLowerCase();
 
@@ -68,7 +71,15 @@ const REGLAGE = (process.env.AMORCAGE_DEMO || '').trim().toLowerCase();
  * declenche plus rien. Pour forcer a nouveau, on ecrit une valeur differente
  * (`forcer-2`), ce qui est un geste explicite et non un reliquat.
  */
-const JETON_FORCAGE = REGLAGE.startsWith('forcer') ? REGLAGE : null;
+const JETON_FORCAGE = (REGLAGE.startsWith('forcer') || REGLAGE.startsWith('completer'))
+  ? REGLAGE
+  : null;
+
+// `completer` passe outre le garde-fou comme `forcer`, mais sans le TRUNCATE :
+// ce qui a deja ete saisi reste en place et le jeu de demonstration vient a
+// cote. C'est le bon reglage quand la base porte quelques fiches de test qu'on
+// prefere garder.
+const EFFACER = !REGLAGE.startsWith('completer');
 
 function forcageNeuf(precedent) {
   return Boolean(JETON_FORCAGE) && JETON_FORCAGE !== (precedent?.resume?.forcage || null);
@@ -179,24 +190,28 @@ async function amorcerDemonstration({ logger = console } = {}) {
       const detail = occupees.map(([t, n]) => `${t}=${n}`).join(', ');
       logger.log(
         `[MACHIBEL] Jeu de demonstration non pose : la base contient deja des donnees (${detail}).\n`
-        + '           Rien n\'a ete efface. Pour le poser malgre tout, videz ces tables ou\n'
-        + '           demarrez une fois avec AMORCAGE_DEMO=forcer (ceci efface les donnees existantes).'
+        + '           Rien n\'a ete efface. Pour le poser malgre tout, demarrez une fois avec\n'
+        + '             AMORCAGE_DEMO=completer  pose le jeu a cote, sans rien effacer\n'
+        + '             AMORCAGE_DEMO=forcer     efface tout d\'abord'
       );
       await inscrire(client, 'ignore', { motif: 'base non vide', comptes });
       return { etat: 'ignore', raison: detail };
     }
 
-    logger.log(
-      forcer
-        ? `[MACHIBEL] AMORCAGE_DEMO=${JETON_FORCAGE} : remplissage FORCE, les donnees existantes vont etre effacees.\n`
-          + '           Ce forcage n\'agira qu\'une fois : la variable peut rester en place sans danger.'
-        : '[MACHIBEL] Base vide : mise en place du jeu de demonstration (quelques minutes)...'
-    );
+    if (!forcer) {
+      logger.log('[MACHIBEL] Base vide : mise en place du jeu de demonstration (quelques minutes)...');
+    } else {
+      logger.log(
+        `[MACHIBEL] AMORCAGE_DEMO=${JETON_FORCAGE} : remplissage ${EFFACER ? 'FORCE' : 'en complement'}, `
+        + `les donnees existantes vont etre ${EFFACER ? 'EFFACEES' : 'conservees'}.\n`
+        + '           Ce reglage n\'agira qu\'une fois : la variable peut rester en place sans danger.'
+      );
+    }
 
     // Chargement tardif : ce module pese un millier de lignes et n'a aucune
     // raison d'etre analyse a chaque demarrage d'un serveur deja amorce.
     const { remplir } = require('../../scripts/seed-demo');
-    const { manifeste, bilan, problemes } = await remplir();
+    const { manifeste, bilan, problemes } = await remplir({ effacer: EFFACER });
 
     // Le jeton de forcage est conserve : c'est lui qui empeche la meme valeur
     // de tout reeffacer au prochain reveil du service.

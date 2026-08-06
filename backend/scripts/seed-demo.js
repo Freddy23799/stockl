@@ -97,7 +97,17 @@ function copierVersUploads(source, sousDossier, nomFichier, cle) {
 
 /* --- Nettoyage ------------------------------------------------------------ */
 
-async function vider(client) {
+async function vider(client, effacer) {
+  // Mode complement : on ajoute le jeu de demonstration a cote de ce qui est
+  // deja saisi, sans rien detruire. Les identifiants ne repartent pas de 1,
+  // ce qui n'a aucune importance : tout le remplissage travaille avec les
+  // identifiants reellement rendus par les INSERT, jamais avec des valeurs
+  // supposees.
+  if (!effacer) {
+    log('Mode complement : les donnees existantes sont conservees.');
+    return;
+  }
+
   log('Nettoyage des donnees existantes...');
   // Ordre impose par les cles etrangeres. Le compte administrateur et les
   // parametres sont conserves : ce sont eux qui permettent de se connecter.
@@ -141,11 +151,24 @@ async function poserEtablissement(client) {
 async function creerFonctions(client, adminId) {
   const parNom = new Map();
   for (const f of D.FONCTIONS) {
+    // `ON CONFLICT` plutot qu'un INSERT sec : en mode complement, la base
+    // contient deja des fonctions saisies a la main, et un nom identique
+    // heurterait l'index unique sur `lower(trim(nom))` - le remplissage
+    // s'arreterait la, sur un doublon sans consequence.
     const { rows } = await client.query(
-      'INSERT INTO fonctions (nom, description, created_at) VALUES ($1, $2, $3) RETURNING *',
+      `INSERT INTO fonctions (nom, description, created_at) VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING RETURNING *`,
       [f.nom, f.description, `${D.DEBUT}T08:00:00`]
     );
-    parNom.set(f.nom, rows[0]);
+    if (rows[0]) {
+      parNom.set(f.nom, rows[0]);
+      continue;
+    }
+    const { rows: existante } = await client.query(
+      'SELECT * FROM fonctions WHERE lower(trim(nom)) = lower(trim($1))',
+      [f.nom]
+    );
+    parNom.set(f.nom, existante[0]);
   }
   await audit(client, {
     type: 'fonction_creation', utilisateurId: adminId, date: `${D.DEBUT}T08:05:00`,
@@ -1333,13 +1356,16 @@ async function verifier(client) {
 /**
  * Pose le jeu de demonstration complet sur la base courante.
  *
- * ATTENTION : commence par vider toutes les tables metier. L'appelant est
- * responsable de verifier qu'il n'y a rien a perdre - c'est ce que fait
- * `src/db/amorcage-demo.js` avant de l'appeler au demarrage du serveur.
+ * ATTENTION : par defaut, commence par vider toutes les tables metier.
+ * L'appelant est responsable de verifier qu'il n'y a rien a perdre - c'est ce
+ * que fait `src/db/amorcage-demo.js` avant de l'appeler au demarrage.
  *
+ * @param {object}  [options]
+ * @param {boolean} [options.effacer] false pour ajouter a l'existant sans rien
+ *                                    detruire
  * @returns {{ manifeste: object, bilan: object, problemes: string[] }}
  */
-async function remplir() {
+async function remplir({ effacer = true } = {}) {
   manifeste = {};
   const client = await pool.connect();
   try {
@@ -1355,7 +1381,7 @@ async function remplir() {
     log(`Photos disponibles : ${[...photos.values()].filter(Boolean).length} / ${demandes.length}`);
 
     await client.query('BEGIN');
-    await vider(client);
+    await vider(client, effacer);
     await poserEtablissement(client);
     const fonctions = await creerFonctions(client, adminId);
     const fournisseurs = await creerFournisseurs(client, adminId);
