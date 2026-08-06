@@ -6,6 +6,7 @@ import { useModulesStore } from '../stores/modules'
 import { useToastStore } from '../stores/toasts'
 import { telechargerDocument, nommerDocument, formatTaille } from '../utils/telecharger'
 import { formatMontant, formatDate, formatDateCourt } from '../utils/format'
+import { reduireImages, reduireImage, COTE_MAX_DOCUMENT, COTE_MAX_PHOTO } from '../utils/image'
 import PageHeader from '../components/ui/PageHeader.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
@@ -132,8 +133,11 @@ async function envoyerPhoto(evenement) {
   if (!fichier) return
   photoEnvoi.value = true
   try {
+    // Reduite ici : une photo de telephone pese 3 Mo pour une vignette de
+    // quelques centimetres, et l'envoyer entiere est le plus long de l'operation.
+    const reduit = await reduireImage(fichier, COTE_MAX_PHOTO)
     const corps = new FormData()
-    corps.append('photo', fichier)
+    corps.append('photo', reduit)
     await api.post(`/employes/${route.params.id}/photo`, corps)
     toasts.succes('Photo mise a jour')
     await charger()
@@ -245,19 +249,52 @@ const CATEGORIES = [
 function ouvrirDocument() {
   Object.assign(documentForm, { nom: '', categorie: 'autre', note: '' })
   documentFichiers.value = []
+  poidsOriginal.value = 0
   documentErreur.value = ''
   documentVisible.value = true
 }
 
-function choisirFichiers(evenement) {
-  // On ajoute au lieu de remplacer : on selectionne souvent les pages d'un
-  // contrat en plusieurs fois, ou on complete avec une photo prise ensuite.
-  documentFichiers.value = [...documentFichiers.value, ...Array.from(evenement.target.files || [])]
+const reductionEnCours = ref(false)
+
+// Poids cumule avant et apres reduction : l'utilisateur voit ce que l'envoi va
+// reellement transporter, ce qui compte quand on paie sa connexion au volume.
+const poidsOriginal = ref(0)
+
+async function choisirFichiers(evenement) {
+  const bruts = Array.from(evenement.target.files || [])
   evenement.target.value = ''
+  if (!bruts.length) return
+
+  reductionEnCours.value = true
+  try {
+    // Les images sont reduites AVANT l'envoi : le navigateur decode et
+    // redimensionne avec l'acceleration materielle en quelques dizaines de
+    // millisecondes, la ou le serveur mettait plusieurs secondes par page - et
+    // l'envoi devient quinze fois plus leger.
+    const reduits = await reduireImages(bruts, COTE_MAX_DOCUMENT)
+    poidsOriginal.value += bruts.reduce((s, f) => s + f.size, 0)
+    // On ajoute au lieu de remplacer : on selectionne souvent les pages d'un
+    // contrat en plusieurs fois, ou on complete avec une photo prise ensuite.
+    documentFichiers.value = [...documentFichiers.value, ...reduits]
+  } finally {
+    reductionEnCours.value = false
+  }
 }
+
+const poidsEnvoi = computed(() =>
+  documentFichiers.value.reduce((s, f) => s + f.size, 0)
+)
+
+const gainEnvoi = computed(() => {
+  if (!poidsOriginal.value || poidsEnvoi.value >= poidsOriginal.value) return null
+  return Math.round((1 - poidsEnvoi.value / poidsOriginal.value) * 100)
+})
 
 function retirerFichier(index) {
   documentFichiers.value.splice(index, 1)
+  // Le poids d'origine n'a plus de sens une fois la liste modifiee : on cesse
+  // d'annoncer un gain qu'on ne sait plus calculer.
+  if (!documentFichiers.value.length) poidsOriginal.value = 0
 }
 
 async function soumettreDocument() {
@@ -286,6 +323,55 @@ async function soumettreDocument() {
     documentErreur.value = err.response?.data?.message || "Erreur lors de l'envoi"
   } finally {
     documentSoumission.value = false
+  }
+}
+
+/* --- Renommer un document et retirer une piece ---------------------------- */
+
+const documentEdite = ref(null)
+const editionForm = reactive({ nom: '', categorie: 'autre', note: '' })
+const editionSoumission = ref(false)
+const fichierASupprimer = ref(null)
+
+function ouvrirEdition(doc) {
+  documentEdite.value = doc
+  Object.assign(editionForm, {
+    nom: doc.nom,
+    categorie: doc.categorie || 'autre',
+    note: doc.note || '',
+  })
+}
+
+async function enregistrerEdition() {
+  if (!editionForm.nom.trim()) return
+  editionSoumission.value = true
+  try {
+    await api.put(`/employes/${route.params.id}/documents/${documentEdite.value.id}`, {
+      nom: editionForm.nom,
+      categorie: editionForm.categorie,
+      note: editionForm.note,
+    })
+    toasts.succes('Document mis a jour')
+    documentEdite.value = null
+    await charger()
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur')
+  } finally {
+    editionSoumission.value = false
+  }
+}
+
+// Retirer une seule piece : une page numerisee a l'envers ne doit pas obliger a
+// supprimer le document entier et a tout recommencer.
+async function supprimerFichier() {
+  const { doc, fichier } = fichierASupprimer.value
+  fichierASupprimer.value = null
+  try {
+    await api.delete(`/employes/${route.params.id}/documents/${doc.id}/fichiers/${fichier.id}`)
+    toasts.succes('Piece retiree')
+    await charger()
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur')
   }
 }
 
@@ -566,35 +652,54 @@ onMounted(charger)
                     <template v-if="doc.note"> — {{ doc.note }}</template>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  class="btn-sm btn-ghost"
-                  style="color: var(--danger)"
-                  title="Supprimer le document"
-                  @click="aSupprimer = doc"
-                >
-                  <Icon name="trash" :size="15" />
-                </button>
+                <div class="row" style="gap: 2px; flex: none">
+                  <button
+                    type="button"
+                    class="btn-sm btn-ghost"
+                    title="Renommer ou changer la categorie"
+                    @click="ouvrirEdition(doc)"
+                  >
+                    <Icon name="edit" :size="15" />
+                  </button>
+                  <button
+                    type="button"
+                    class="btn-sm btn-ghost"
+                    style="color: var(--danger)"
+                    title="Supprimer le document"
+                    @click="aSupprimer = doc"
+                  >
+                    <Icon name="trash" :size="15" />
+                  </button>
+                </div>
               </div>
 
               <div class="fichiers">
-                <a
-                  v-for="f in doc.fichiers"
-                  :key="f.id"
-                  class="fichier"
-                  :href="assetUrl(f.chemin)"
-                  target="_blank"
-                  rel="noopener"
-                  :title="f.nom_original"
-                >
-                  <img v-if="estImage(f)" :src="assetUrl(f.chemin)" alt="" />
-                  <span v-else class="fichier-icone"><Icon name="receipt" :size="20" /></span>
-                  <span class="fichier-nom">{{ f.nom_original }}</span>
-                  <span class="fichier-taille">
-                    {{ formatTaille(f.taille_octets) }}
-                    <span v-if="gain(f)" class="gain">−{{ gain(f) }} %</span>
-                  </span>
-                </a>
+                <div v-for="f in doc.fichiers" :key="f.id" class="fichier-cadre">
+                  <a
+                    class="fichier"
+                    :href="assetUrl(f.chemin)"
+                    target="_blank"
+                    rel="noopener"
+                    :title="f.nom_original"
+                  >
+                    <img v-if="estImage(f)" :src="assetUrl(f.chemin)" alt="" loading="lazy" />
+                    <span v-else class="fichier-icone"><Icon name="receipt" :size="20" /></span>
+                    <span class="fichier-nom">{{ f.nom_original }}</span>
+                    <span class="fichier-taille">
+                      {{ formatTaille(f.taille_octets) }}
+                      <span v-if="gain(f)" class="gain">−{{ gain(f) }} %</span>
+                    </span>
+                  </a>
+                  <button
+                    v-if="doc.fichiers.length > 1"
+                    type="button"
+                    class="fichier-retirer"
+                    title="Retirer cette piece"
+                    @click.prevent="fichierASupprimer = { doc, fichier: f }"
+                  >
+                    <Icon name="x" :size="13" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -768,9 +873,23 @@ onMounted(charger)
             </label>
           </div>
           <span class="field-hint">
-            Images et PDF, 5 Mo par fichier. Les images sont automatiquement reduites.
+            Images et PDF, 5 Mo par fichier. Les images sont reduites sur cet appareil
+            avant l'envoi : le transfert est bien plus rapide sur une connexion mobile.
           </span>
+          <p v-if="reductionEnCours" class="field-hint row" style="gap: 7px">
+            <span class="spinner" /> Preparation des images...
+          </p>
         </div>
+
+        <p v-if="gainEnvoi" class="alert alert-info">
+          <Icon name="check" :size="16" />
+          <span>
+            {{ documentFichiers.length }} fichier(s) prets :
+            <strong>{{ formatTaille(poidsOriginal) }}</strong> reduits a
+            <strong>{{ formatTaille(poidsEnvoi) }}</strong>, soit
+            <strong>{{ gainEnvoi }} % de moins</strong> a transferer.
+          </span>
+        </p>
 
         <ul v-if="documentFichiers.length" class="liste-fichiers">
           <li v-for="(f, i) in documentFichiers" :key="i">
@@ -796,6 +915,44 @@ onMounted(charger)
         </button>
       </template>
     </Modal>
+
+    <Modal v-if="documentEdite" title="Modifier le document" @close="documentEdite = null">
+      <form id="form-edition-doc" @submit.prevent="enregistrerEdition">
+        <div class="field">
+          <label>Nom du document <span class="champ-requis">*</span></label>
+          <input v-model="editionForm.nom" type="text" maxlength="150" required />
+        </div>
+        <div class="field">
+          <label>Categorie</label>
+          <select v-model="editionForm.categorie">
+            <option v-for="[valeur, texte] in CATEGORIES" :key="valeur" :value="valeur">{{ texte }}</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Note <span class="muted">(optionnel)</span></label>
+          <input v-model="editionForm.note" type="text" maxlength="300" />
+        </div>
+        <p class="small muted">
+          Les pieces du document ne sont pas touchees.
+        </p>
+      </form>
+      <template #footer>
+        <button type="button" @click="documentEdite = null">Annuler</button>
+        <button type="submit" form="form-edition-doc" class="primary" :disabled="editionSoumission">
+          <span v-if="editionSoumission" class="spinner" />
+          Enregistrer
+        </button>
+      </template>
+    </Modal>
+
+    <ConfirmDialog
+      v-if="fichierASupprimer"
+      title="Retirer cette piece ?"
+      :message="`« ${fichierASupprimer.fichier.nom_original} » sera definitivement effacee. Les autres pieces du document sont conservees.`"
+      confirm-label="Retirer"
+      @confirm="supprimerFichier"
+      @cancel="fichierASupprimer = null"
+    />
 
     <ConfirmDialog
       v-if="aSupprimer"
@@ -945,6 +1102,30 @@ onMounted(charger)
   color: var(--text-muted);
 }
 .gain { color: var(--success); font-weight: 650; }
+
+.fichier-cadre { position: relative; }
+/* Le retrait n'apparait qu'au survol : toujours visible, il invite au clic
+   accidentel sur une piece justificative qu'on ne peut pas recuperer. */
+.fichier-retirer {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-card, #fff);
+  color: var(--danger);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.fichier-cadre:hover .fichier-retirer,
+.fichier-retirer:focus-visible { opacity: 1; }
+/* Sur ecran tactile il n'y a pas de survol : le bouton reste visible. */
+@media (pointer: coarse) {
+  .fichier-retirer { opacity: 1; }
+}
 
 .liste-fichiers { list-style: none; margin: 10px 0 0; padding: 0; }
 .liste-fichiers li {

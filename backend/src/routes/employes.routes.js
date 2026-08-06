@@ -32,6 +32,8 @@ router.post('/:id/photo', uploadEmployePhoto.single('photo'), employes.uploadPho
 // Un document regroupe plusieurs fichiers : d'ou l'envoi multiple.
 router.post('/:id/documents', uploadDocumentFichiers, documents.creer);
 router.post('/:id/documents/:documentId/fichiers', uploadDocumentFichiers, documents.ajouterFichiers);
+router.put('/:id/documents/:documentId', documents.modifier);
+router.delete('/:id/documents/:documentId/fichiers/:fichierId', documents.supprimerFichier);
 router.delete('/:id/documents/:documentId', documents.supprimer);
 
 router.use(gererErreursUpload);

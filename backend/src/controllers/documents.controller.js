@@ -176,6 +176,132 @@ async function ajouterFichiers(req, res) {
   }
 }
 
+/** Renomme un document ou change sa categorie, sans toucher a ses fichiers. */
+async function modifier(req, res) {
+  const { nom, categorie, note } = req.body;
+
+  if (nom !== undefined && !String(nom).trim()) {
+    return res.status(400).json({ message: 'Le nom du document ne peut pas etre vide' });
+  }
+  if (categorie && !CATEGORIES.includes(categorie)) {
+    return res.status(400).json({
+      message: `Categorie invalide. Valeurs acceptees : ${CATEGORIES.join(', ')}.`,
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: avantRows } = await client.query(
+      `SELECT d.*, e.matricule FROM employes_documents d
+         JOIN employes e ON e.id = d.employe_id
+        WHERE d.id = $1 AND d.employe_id = $2`,
+      [req.params.documentId, req.params.id]
+    );
+    const avant = avantRows[0];
+    if (!avant) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Document introuvable' });
+    }
+
+    const { rows } = await client.query(
+      `UPDATE employes_documents
+          SET nom = COALESCE($1, nom),
+              categorie = COALESCE($2, categorie),
+              note = CASE WHEN $3::text IS NULL THEN note ELSE NULLIF($3, '') END
+        WHERE id = $4 RETURNING *`,
+      [nom ? String(nom).trim() : null, categorie || null,
+        note === undefined ? null : String(note), req.params.documentId]
+    );
+    const apres = rows[0];
+
+    await logAudit(client, {
+      typeOperation: 'employe_document_modification',
+      entiteId: Number(req.params.id),
+      utilisateurId: req.user.id,
+      details: { matricule: avant.matricule, nom_document: apres.nom },
+      avant: { nom: avant.nom, categorie: avant.categorie, note: avant.note },
+      apres: { nom: apres.nom, categorie: apres.categorie, note: apres.note },
+    });
+
+    await client.query('COMMIT');
+    res.json(apres);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Retire une seule piece d'un document.
+ *
+ * Sans cela, une page numerisee a l'envers obligeait a supprimer le document
+ * entier et a tout recommencer.
+ */
+async function supprimerFichier(req, res) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT f.*, d.nom AS document_nom, e.matricule
+         FROM employes_documents_fichiers f
+         JOIN employes_documents d ON d.id = f.document_id
+         JOIN employes e ON e.id = d.employe_id
+        WHERE f.id = $1 AND d.id = $2 AND d.employe_id = $3`,
+      [req.params.fichierId, req.params.documentId, req.params.id]
+    );
+    const fichier = rows[0];
+    if (!fichier) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Fichier introuvable' });
+    }
+
+    const { rows: restants } = await client.query(
+      'SELECT count(*)::int AS n FROM employes_documents_fichiers WHERE document_id = $1',
+      [req.params.documentId]
+    );
+    // Un document sans aucune piece n'a plus de raison d'exister : plutot que
+    // de laisser une coquille vide dans le dossier, on refuse et on oriente
+    // vers la suppression du document.
+    if (restants[0].n <= 1) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        message: "C'est la derniere piece de ce document. Supprimez le document entier, "
+          + "ou ajoutez d'abord une autre piece.",
+        code: 'DERNIER_FICHIER',
+      });
+    }
+
+    await client.query('DELETE FROM employes_documents_fichiers WHERE id = $1', [req.params.fichierId]);
+    await logAudit(client, {
+      typeOperation: 'employe_document_fichier_suppression',
+      entiteId: Number(req.params.id),
+      utilisateurId: req.user.id,
+      details: {
+        matricule: fichier.matricule,
+        nom_document: fichier.document_nom,
+        fichier: fichier.nom_original,
+      },
+    });
+
+    await client.query('COMMIT');
+
+    // Le fichier ne part qu'apres le COMMIT : si la transaction avait echoue,
+    // la base pointerait vers un fichier deja efface.
+    nettoyer([{ chemin: fichier.chemin }]);
+    res.json({ message: 'Piece retiree du document' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 async function supprimer(req, res) {
   const client = await pool.connect();
   try {
@@ -232,4 +358,4 @@ async function supprimer(req, res) {
   }
 }
 
-module.exports = { creer, ajouterFichiers, supprimer, CATEGORIES };
+module.exports = { creer, ajouterFichiers, modifier, supprimerFichier, supprimer, CATEGORIES };

@@ -1,10 +1,11 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
 import api from '../api/client'
 import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
 import BoutonExport from '../components/ui/BoutonExport.vue'
+import Pagination from '../components/ui/Pagination.vue'
 import Tabs from '../components/ui/Tabs.vue'
 import Modal from '../components/ui/Modal.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
@@ -23,55 +24,60 @@ const filtres = reactive({ from: '', to: '', categorie: '' })
 
 const filtresActifs = computed(() => Boolean(filtres.from || filtres.to || filtres.categorie))
 
-const totalAffiche = computed(() => depenses.value.reduce((s, d) => s + Number(d.montant), 0))
+// Pagination : la liste des depenses n'a aucune raison de tenir en memoire.
+// Un commerce en accumule plusieurs centaines par an, et l'ancienne requete les
+// tronquait a cinq cents SANS RIEN DIRE - les totaux devenaient faux en silence.
+const page = ref(1)
+const pageSize = 25
+const total = ref(0)
 
-const moyenne = computed(() =>
-  depenses.value.length ? totalAffiche.value / depenses.value.length : 0
+// Les totaux et la repartition viennent du serveur et portent sur TOUTE la
+// periode filtree. Les calculer sur les vingt-cinq lignes visibles donnerait un
+// chiffre qui ne veut rien dire.
+const resume = ref(null)
+const categoriesConnues = ref([])
+
+const totalAffiche = computed(() => Number(resume.value?.total ?? 0))
+const moyenne = computed(() => Number(resume.value?.moyenne ?? 0))
+const parCategorie = computed(() =>
+  (resume.value?.par_categorie || []).map((c) => ({
+    categorie: c.categorie || 'Sans categorie',
+    total: Number(c.montant),
+    nombre: c.nombre,
+    part: Number(c.part),
+  }))
 )
 
-// Regroupement par categorie calcule sur les lignes deja chargees : pas d'appel
-// supplementaire au serveur, et le resultat suit automatiquement les filtres.
-const parCategorie = computed(() => {
-  const map = new Map()
-  for (const d of depenses.value) {
-    const cle = d.categorie || 'Sans categorie'
-    const actuel = map.get(cle) || { categorie: cle, total: 0, nombre: 0 }
-    actuel.total += Number(d.montant)
-    actuel.nombre += 1
-    map.set(cle, actuel)
-  }
-  return Array.from(map.values())
-    .map((c) => ({ ...c, part: totalAffiche.value > 0 ? c.total / totalAffiche.value : 0 }))
-    .sort((a, b) => b.total - a.total)
-})
-
-const categoriesConnues = computed(() =>
-  [...new Set(depenses.value.map((d) => d.categorie).filter(Boolean))].sort()
-)
-
-const depensesAffichees = computed(() => {
-  const q = recherche.value.trim().toLowerCase()
-  if (!q) return depenses.value
-  return depenses.value.filter(
-    (d) => d.categorie.toLowerCase().includes(q) || (d.note || '').toLowerCase().includes(q)
-  )
-})
+// La recherche part au serveur : filtrer la page affichee laisserait croire
+// qu'un libelle n'existe pas alors qu'il est simplement sur une autre page.
+const depensesAffichees = computed(() => depenses.value)
 
 const onglets = computed(() => [
-  { id: 'liste', label: 'Depenses', icon: 'receipt', count: depenses.value.length },
+  { id: 'liste', label: 'Depenses', icon: 'receipt', count: total.value },
   { id: 'categories', label: 'Par categorie', icon: 'chart', count: parCategorie.value.length },
 ])
+
+function parametresFiltre() {
+  const params = {}
+  if (filtres.from) params.from = filtres.from
+  if (filtres.to) params.to = filtres.to
+  if (filtres.categorie) params.categorie = filtres.categorie
+  if (recherche.value.trim()) params.recherche = recherche.value.trim()
+  return params
+}
 
 async function charger() {
   loading.value = true
   erreur.value = ''
   try {
-    const params = {}
-    if (filtres.from) params.from = filtres.from
-    if (filtres.to) params.to = filtres.to
-    if (filtres.categorie) params.categorie = filtres.categorie
-    const { data } = await api.get('/depenses', { params })
-    depenses.value = data
+    const params = parametresFiltre()
+    const [listeRes, resumeRes] = await Promise.all([
+      api.get('/depenses', { params: { ...params, page: page.value, pageSize } }),
+      api.get('/depenses/resume', { params }),
+    ])
+    depenses.value = listeRes.data.data
+    total.value = listeRes.data.total
+    resume.value = resumeRes.data
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
@@ -79,12 +85,34 @@ async function charger() {
   }
 }
 
+async function chargerCategories() {
+  try {
+    const { data } = await api.get('/depenses/categories')
+    categoriesConnues.value = data.map((c) => c.categorie)
+  } catch {
+    // Non bloquant : la saisie assistee se passe de suggestions.
+  }
+}
+
+function changerPage(nouvellePage) {
+  page.value = nouvellePage
+  charger()
+}
+
+// La recherche repart de la premiere page, sinon on cherche dans la page 4
+// d'un resultat qui n'en compte qu'une.
+let minuteurRecherche = null
+watch(recherche, () => {
+  clearTimeout(minuteurRecherche)
+  minuteurRecherche = setTimeout(() => { page.value = 1; charger() }, 300)
+})
+
 function reinitialiserFiltres() {
   Object.assign(filtres, { from: '', to: '', categorie: '' })
   charger()
 }
 
-onMounted(charger)
+onMounted(() => { charger(); chargerCategories() })
 
 /* --- Saisie ------------------------------------------------------------- */
 
@@ -170,18 +198,18 @@ async function soumettre() {
         <div class="toolbar">
           <div class="field">
             <label>Categorie</label>
-            <input v-model="filtres.categorie" list="categories-connues" placeholder="Toutes" @change="charger" />
+            <input v-model="filtres.categorie" list="categories-connues" placeholder="Toutes" @change="filtrer" />
             <datalist id="categories-connues">
               <option v-for="c in categoriesConnues" :key="c" :value="c" />
             </datalist>
           </div>
           <div class="field">
             <label>Du</label>
-            <input v-model="filtres.from" type="date" @change="charger" />
+            <input v-model="filtres.from" type="date" @change="filtrer" />
           </div>
           <div class="field">
             <label>Au</label>
-            <input v-model="filtres.to" type="date" @change="charger" />
+            <input v-model="filtres.to" type="date" @change="filtrer" />
           </div>
           <button v-if="filtresActifs" type="button" class="btn-ghost" @click="reinitialiserFiltres">
             <Icon name="x" :size="14" /> Effacer
@@ -248,9 +276,14 @@ async function soumettre() {
         </div>
       </div>
 
-      <div v-if="depensesAffichees.length" class="card-foot">
-        <span class="small muted">Total affiche</span>
-        <span class="strong tnum">{{ formatMontant(totalAffiche) }}</span>
+      <div class="card-foot" style="flex-wrap: wrap; gap: 12px">
+        <Pagination :page="page" :page-size="pageSize" :total="total" @update:page="changerPage" />
+        <span class="row" style="gap: 8px; margin-left: auto">
+          <!-- Le total porte sur toute la periode filtree, pas sur la page :
+               additionner les vingt-cinq lignes visibles n'aurait aucun sens. -->
+          <span class="small muted">Total sur la periode</span>
+          <span class="strong tnum">{{ formatMontant(totalAffiche) }}</span>
+        </span>
       </div>
     </div>
 
