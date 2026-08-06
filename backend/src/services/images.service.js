@@ -243,4 +243,93 @@ function preparerLogo(chemin) {
   return versionReduite(chemin, TAILLES.impression);
 }
 
-module.exports = { versionReduite, preparerLogo, TAILLES, SEUIL_OCTETS, FORMATS_TRAITABLES };
+/* --- Optimisation a l'envoi ----------------------------------------------- */
+
+// Cote le plus long conserve pour une piece versee au dossier d'un employe.
+// Une page A4 numerisee a 1600 pixels de haut donne environ 135 points par
+// pouce : un texte imprime y reste parfaitement lisible a l'ecran comme a la
+// reimpression, pour une fraction du poids d'origine. Au dela, on stocke des
+// details que personne ne regardera jamais.
+const COTE_MAX_DOCUMENT = 1600;
+
+// Une photo d'identite ne sert qu'au badge et a la fiche : 800 pixels suffisent
+// tres largement, le badge l'imprime dans 25 millimetres.
+const COTE_MAX_PHOTO = 800;
+
+/**
+ * Reduit un fichier deja televerse, sur place.
+ *
+ * Applique aux pieces des dossiers employes et aux photos. Le fichier d'origine
+ * est remplace : conserver les deux ferait doubler l'occupation disque pour un
+ * original que personne ne consultera.
+ *
+ * Ce qui n'est pas une image traitable est laisse intact. Un PDF ne peut pas
+ * etre recompresse de facon sure sans outil natif, et le degrader au hasard sur
+ * un contrat signe serait bien pire que de le stocker tel quel.
+ *
+ * @returns {{ tailleOrigine: number, tailleFinale: number, chemin: string, optimise: boolean }}
+ */
+function optimiserFichierTelverse(cheminAbsolu, { coteMax = COTE_MAX_DOCUMENT } = {}) {
+  const tailleOrigine = fs.statSync(cheminAbsolu).size;
+  const extension = path.extname(cheminAbsolu).toLowerCase();
+
+  const resultatInchange = {
+    tailleOrigine, tailleFinale: tailleOrigine, chemin: cheminAbsolu, optimise: false,
+  };
+
+  if (!FORMATS_TRAITABLES.includes(extension)) return resultatInchange;
+
+  try {
+    const image = decoder(cheminAbsolu, extension);
+    const cote = Math.max(image.largeur, image.hauteur);
+    const facteur = cote > coteMax ? coteMax / cote : 1;
+
+    const largeurCible = Math.max(1, Math.round(image.largeur * facteur));
+    const hauteurCible = Math.max(1, Math.round(image.hauteur * facteur));
+
+    const pixels = facteur < 1
+      ? reduire(image, largeurCible, hauteurCible)
+      : Buffer.from(image.pixels);
+
+    const transparent = aDeLaTransparence(pixels);
+    const { donnees, extension: extensionFinale } = encoder(
+      { pixels, largeur: largeurCible, hauteur: hauteurCible },
+      { transparent }
+    );
+
+    // Un fichier deja bien compresse peut ressortir plus lourd apres
+    // reencodage : dans ce cas on garde l'original, l'optimisation n'a pas lieu
+    // d'etre.
+    if (donnees.length >= tailleOrigine) return resultatInchange;
+
+    // Le format peut changer (un PNG photographique devient un JPEG) : le nom
+    // suit, sinon un fichier .png contiendrait du JPEG et aucun lecteur ne
+    // saurait l'ouvrir.
+    let cheminFinal = cheminAbsolu;
+    if (extensionFinale !== extension) {
+      cheminFinal = cheminAbsolu.slice(0, -extension.length) + extensionFinale;
+    }
+
+    fs.writeFileSync(cheminFinal, donnees);
+    if (cheminFinal !== cheminAbsolu) {
+      try { fs.unlinkSync(cheminAbsolu); } catch { /* deja parti */ }
+    }
+
+    return { tailleOrigine, tailleFinale: donnees.length, chemin: cheminFinal, optimise: true };
+  } catch {
+    // Image corrompue ou format exotique portant une extension connue :
+    // l'echec de l'optimisation ne doit jamais faire perdre le fichier.
+    return resultatInchange;
+  }
+}
+
+module.exports = {
+  versionReduite,
+  preparerLogo,
+  optimiserFichierTelverse,
+  TAILLES,
+  SEUIL_OCTETS,
+  FORMATS_TRAITABLES,
+  COTE_MAX_DOCUMENT,
+  COTE_MAX_PHOTO,
+};

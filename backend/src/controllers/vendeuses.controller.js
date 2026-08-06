@@ -32,24 +32,76 @@ async function list(req, res) {
   res.json(rows);
 }
 
+/**
+ * Une vendeuse est un ROLE attribue a un employe, pas une fiche autonome.
+ *
+ * Le nom et le contact ne sont plus saisis : ils viennent de la fiche employe.
+ * Sans cela une meme personne existerait deux fois dans le systeme, avec deux
+ * orthographes et deux numeros de telephone, et plus personne ne saurait
+ * laquelle fait foi.
+ *
+ * L'employe se choisit dans la liste COMPLETE, sans filtrer sur sa fonction :
+ * une gerante ou une stagiaire peut tenir la caisse un samedi sans que sa
+ * fonction officielle soit "vendeuse".
+ */
 async function create(req, res) {
-  const { nom, contact } = req.body;
-  if (!nom) return res.status(400).json({ message: 'nom est requis' });
+  const { employe_id } = req.body;
+  if (!employe_id) {
+    return res.status(400).json({
+      message: 'Choisissez l\'employe a qui attribuer ce role de vente',
+      code: 'EMPLOYE_REQUIS',
+    });
+  }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    const { rows: employes } = await client.query(
+      'SELECT id, prenom, nom, telephone, actif FROM employes WHERE id = $1',
+      [employe_id]
+    );
+    const employe = employes[0];
+    if (!employe) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Employe introuvable' });
+    }
+    if (!employe.actif) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'Cet employe est archive : il ne peut pas encaisser.',
+        code: 'EMPLOYE_ARCHIVE',
+      });
+    }
+
+    const { rows: dejaRows } = await client.query(
+      'SELECT id, code, actif FROM vendeuses WHERE employe_id = $1',
+      [employe_id]
+    );
+    if (dejaRows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        message: dejaRows[0].actif
+          ? 'Cet employe a deja un code de vente.'
+          : 'Cet employe a deja un code de vente, actuellement desactive. Reactivez-le plutot que d\'en creer un second.',
+        code: 'DEJA_VENDEUSE',
+        vendeuse_id: dejaRows[0].id,
+      });
+    }
+
+    const nomComplet = `${employe.prenom} ${employe.nom}`.trim();
     const code = await genererCodeUnique(client);
     const { rows } = await client.query(
-      'INSERT INTO vendeuses (nom, contact, code) VALUES ($1, $2, $3) RETURNING *',
-      [nom, contact || null, code]
+      'INSERT INTO vendeuses (nom, contact, code, employe_id) VALUES ($1, $2, $3, $4) RETURNING *',
+      [nomComplet, employe.telephone || null, code, employe_id]
     );
+
     await logAudit(client, {
       typeOperation: 'vendeuse_creation',
       entiteId: rows[0].id,
       utilisateurId: req.user?.id,
-      details: { vendeuse_nom: nom, code },
-      apres: { nom: rows[0].nom, contact: rows[0].contact, code: rows[0].code, actif: rows[0].actif },
+      details: { vendeuse_nom: nomComplet, employe_id },
+      apres: { nom: rows[0].nom, contact: rows[0].contact, actif: rows[0].actif },
     });
     await client.query('COMMIT');
     res.status(201).json(rows[0]);

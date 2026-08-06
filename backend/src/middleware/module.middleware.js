@@ -4,6 +4,9 @@ const COLONNE_PAR_MODULE = {
   ventes: 'module_ventes',
   fournisseurs: 'module_fournisseurs',
   depenses: 'module_depenses',
+  employes: 'module_employes',
+  paie: 'module_paie',
+  badges: 'module_badges',
 };
 
 // Blocage reel cote backend : un module desactive rejette la requete meme si

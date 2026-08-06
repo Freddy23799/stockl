@@ -64,6 +64,28 @@ const uploadLogo = multer({
   fileFilter: filtreFormats(FORMATS_LOGO),
 });
 
+// Photo d'un employe : meme regle que le logo. Elle est imprimee sur le badge,
+// donc restreinte aux formats qu'un PDF sait embarquer.
+const uploadEmployePhoto = multer({
+  storage: stockageTemporaire('employes'),
+  limits: { fileSize: TAILLE_MAX },
+  fileFilter: filtreFormats(['.jpg', '.jpeg', '.png']),
+});
+
+// Piece versee au dossier d'un employe : contrat scanne, diplome, certificat.
+// Plus permissif que les photos, parce qu'un dossier RH recoit ce qui existe
+// deja, pas ce qui arrange le logiciel.
+const FORMATS_DOCUMENT = [...FORMATS_IMAGE, '.pdf'];
+
+// Un document est un ensemble de fichiers ("Contrat" = ses quatre pages) : d'ou
+// l'envoi multiple. La borne evite qu'un envoi accidentel de deux cents pages
+// bloque la requete.
+const uploadDocumentFichiers = multer({
+  storage: stockageTemporaire('documents'),
+  limits: { fileSize: TAILLE_MAX, files: 20 },
+  fileFilter: filtreFormats(FORMATS_DOCUMENT),
+}).array('fichiers', 20);
+
 /**
  * Renomme le fichier temporaire en son nom definitif, une fois l'envoi complet
  * et valide. Retourne le chemin relatif a stocker en base.
@@ -129,8 +151,11 @@ function gererErreursUpload(err, req, res, next) {
 module.exports = {
   uploadProduitPhoto,
   uploadLogo,
+  uploadEmployePhoto,
+  uploadDocumentFichiers,
   finaliserFichier,
   nettoyerAnciennesVersions,
   gererErreursUpload,
   TAILLE_MAX,
+  FORMATS_DOCUMENT,
 };

@@ -34,6 +34,7 @@ const CHAMPS_ETABLISSEMENT = [
 const CHAMPS_SYSTEME = [
   'methode_valorisation', 'logo_path',
   'module_ventes', 'module_fournisseurs', 'module_depenses',
+  'module_employes', 'module_paie', 'module_badges',
 ];
 
 // Volontairement permissif : les formats de numero varient trop d'un pays a
