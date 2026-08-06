@@ -1,7 +1,11 @@
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
 const { genererMatriculeUnique } = require('../utils/identifiants-rh');
+const path = require('path');
+const config = require('../config');
 const { finaliserFichier, nettoyerAnciennesVersions } = require('../middleware/upload.middleware');
+const { traiterImage } = require('../services/images.pool');
+const { COTE_MAX_PHOTO } = require('../services/images.service');
 const {
   carriereCourante, historiqueCarriere, ajouterPeriode, corrigerPeriode,
   PeriodeFermeeError, DateCarriereError,
@@ -255,12 +259,30 @@ async function update(req, res) {
  */
 function setActif(actif) {
   return async (req, res) => {
+    const motif = String(req.body?.motif || '').trim();
+
+    // Le motif est exige au blocage, jamais au deblocage. Sans lui, personne ne
+    // saura six mois plus tard s'il s'agissait d'un depart, d'une suspension ou
+    // d'un conge - donc si la fiche doit etre rouverte.
+    if (!actif && !motif) {
+      return res.status(400).json({
+        message: 'Indiquez le motif du blocage.',
+        code: 'MOTIF_REQUIS',
+      });
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       const { rows } = await client.query(
-        'UPDATE employes SET actif = $1, updated_at = now() WHERE id = $2 RETURNING *',
-        [actif, req.params.id]
+        `UPDATE employes
+            SET actif = $1,
+                motif_blocage = $2,
+                bloque_le = CASE WHEN $1 THEN NULL ELSE now() END,
+                bloque_par = CASE WHEN $1 THEN NULL ELSE $3::int END,
+                updated_at = now()
+          WHERE id = $4 RETURNING *`,
+        [actif, actif ? null : motif, actif ? null : req.user.id, req.params.id]
       );
       if (!rows.length) {
         await client.query('ROLLBACK');
@@ -274,12 +296,16 @@ function setActif(actif) {
       }
 
       await logAudit(client, {
-        typeOperation: actif ? 'employe_reactivation' : 'employe_archivage',
+        typeOperation: actif ? 'employe_reactivation' : 'employe_blocage',
         entiteId: Number(req.params.id),
         utilisateurId: req.user.id,
-        details: { matricule: rows[0].matricule, nom_complet: `${rows[0].prenom} ${rows[0].nom}` },
+        details: {
+          matricule: rows[0].matricule,
+          nom_complet: `${rows[0].prenom} ${rows[0].nom}`,
+          motif: motif || null,
+        },
         avant: { actif: !actif },
-        apres: { actif },
+        apres: { actif, motif_blocage: actif ? null : motif },
       });
 
       await client.query('COMMIT');
@@ -366,7 +392,16 @@ async function uploadPhoto(req, res) {
     return res.status(404).json({ message: 'Employe introuvable' });
   }
 
-  const chemin = finaliserFichier(req.file, 'employes', `employe-${req.params.id}`);
+  const cheminBrut = finaliserFichier(req.file, 'employes', `employe-${req.params.id}`);
+
+  // La reduction part dans un fil separe : une photo prise au telephone pese
+  // plusieurs mega-octets et son traitement figerait le serveur pour tout le
+  // monde pendant une demi-seconde.
+  const bilan = await traiterImage({
+    chemin: path.join(config.uploadsDir, cheminBrut.replace(/^uploads\//, '')),
+    coteMax: COTE_MAX_PHOTO,
+  });
+  const chemin = `uploads/employes/${path.basename(bilan.chemin)}`;
   nettoyerAnciennesVersions('employes', `employe-${req.params.id}`, chemin);
 
   const client = await pool.connect();

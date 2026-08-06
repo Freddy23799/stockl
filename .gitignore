@@ -13,3 +13,7 @@ graphify-out/
 # Reglages Claude Code propres a cette machine
 .claude/settings.local.json
 *.tmp.*
+
+# Cache des photos du jeu de demonstration : reconstitue au besoin par
+# `npm run seed-demo`, il n'a rien a faire dans l'historique.
+backend/.cache-photos/

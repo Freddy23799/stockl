@@ -1,6 +1,7 @@
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
 const { finaliserFichier, nettoyerAnciennesVersions } = require('../middleware/upload.middleware');
+const { invaliderCacheModules } = require('../middleware/module.middleware');
 
 /* --- Champs modifiables --------------------------------------------------- */
 
@@ -153,6 +154,9 @@ async function update(req, res) {
     }
 
     await client.query('COMMIT');
+    // Le cache des interrupteurs doit tomber tout de suite : sinon une
+    // desactivation resterait sans effet pendant quelques secondes.
+    invaliderCacheModules();
     res.json(apres);
   } catch (err) {
     await client.query('ROLLBACK');

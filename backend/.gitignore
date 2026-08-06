@@ -6,3 +6,8 @@ uploads/produits/*
 !uploads/produits/.gitkeep
 uploads/logo/*
 !uploads/logo/logo-machibel-default.png
+
+# Photos du jeu de demonstration : produites par `npm run seed-demo`, elles
+# n'ont pas leur place dans l'historique et pesent plusieurs mega-octets.
+uploads/employes/*
+uploads/documents/*

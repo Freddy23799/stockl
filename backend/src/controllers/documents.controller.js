@@ -3,7 +3,8 @@ const path = require('path');
 const pool = require('../config/db');
 const config = require('../config');
 const { logAudit } = require('../db/audit');
-const { optimiserFichierTelverse, COTE_MAX_DOCUMENT } = require('../services/images.service');
+const { COTE_MAX_DOCUMENT } = require('../services/images.service');
+const { traiterImage } = require('../services/images.pool');
 
 // -----------------------------------------------------------------------------
 // Pieces du dossier d'un employe.
@@ -17,13 +18,21 @@ const CATEGORIES = [
   'contrat', 'identite', 'diplome', 'certificat', 'medical', 'bancaire', 'autre',
 ];
 
-/** Range les fichiers recus sous le dossier du document et les reduit. */
-function rangerFichiers(fichiers, documentId) {
+/**
+ * Range les fichiers recus sous le dossier du document et les reduit.
+ *
+ * La reduction part dans un fil d'execution separe, et les fichiers sont
+ * traites EN PARALLELE. Auparavant chaque image etait redimensionnee dans le
+ * fil principal, l'une apres l'autre : un contrat de dix pages figeait le
+ * serveur entier pendant sept secondes, et toutes les autres requetes
+ * attendaient. C'est ce qui donnait l'impression que toute l'application etait
+ * lente, pas seulement l'envoi.
+ */
+async function rangerFichiers(fichiers, documentId) {
   const dossier = path.join(config.uploadsDir, 'documents', String(documentId));
   fs.mkdirSync(dossier, { recursive: true });
 
-  const ranges = [];
-  fichiers.forEach((fichier, index) => {
+  const places = fichiers.map((fichier, index) => {
     const extension = path.extname(fichier.filename).toLowerCase();
     const nomFinal = `piece-${Date.now()}-${index}${extension}`;
     const destination = path.join(dossier, nomFinal);
@@ -32,19 +41,21 @@ function rangerFichiers(fichiers, documentId) {
     // l'envoi complet : un transfert interrompu ne laisse jamais de fichier
     // tronque dans le dossier de l'employe.
     fs.renameSync(fichier.path, destination);
-
-    const bilan = optimiserFichierTelverse(destination, { coteMax: COTE_MAX_DOCUMENT });
-
-    ranges.push({
-      chemin: `uploads/documents/${documentId}/${path.basename(bilan.chemin)}`,
-      nomOriginal: fichier.originalname,
-      typeMime: fichier.mimetype,
-      tailleOctets: bilan.tailleFinale,
-      tailleOrigine: bilan.tailleOrigine,
-      ordre: index,
-    });
+    return { fichier, destination, index };
   });
-  return ranges;
+
+  const bilans = await Promise.all(
+    places.map((p) => traiterImage({ chemin: p.destination, coteMax: COTE_MAX_DOCUMENT }))
+  );
+
+  return places.map((p, i) => ({
+    chemin: `uploads/documents/${documentId}/${path.basename(bilans[i].chemin)}`,
+    nomOriginal: p.fichier.originalname,
+    typeMime: p.fichier.mimetype,
+    tailleOctets: bilans[i].tailleFinale,
+    tailleOrigine: bilans[i].tailleOrigine,
+    ordre: p.index,
+  }));
 }
 
 /** Supprime les fichiers deja ranges. Utilise quand la transaction echoue. */
@@ -88,7 +99,7 @@ async function creer(req, res) {
     );
     const document = docRows[0];
 
-    ranges = rangerFichiers(fichiers, document.id);
+    ranges = await rangerFichiers(fichiers, document.id);
     for (const f of ranges) {
       await client.query(
         `INSERT INTO employes_documents_fichiers
@@ -145,7 +156,7 @@ async function ajouterFichiers(req, res) {
   let ranges = [];
   try {
     await client.query('BEGIN');
-    ranges = rangerFichiers(fichiers, docs[0].id).map((f, i) => ({ ...f, ordre: depart + i }));
+    ranges = (await rangerFichiers(fichiers, docs[0].id)).map((f, i) => ({ ...f, ordre: depart + i }));
     for (const f of ranges) {
       await client.query(
         `INSERT INTO employes_documents_fichiers
