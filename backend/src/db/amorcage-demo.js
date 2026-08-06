@@ -47,10 +47,32 @@ const TABLES_METIER = ['produits', 'ventes', 'employes', 'fournisseurs', 'vendeu
 
 /**
  * Reglage facultatif, absent en fonctionnement normal :
- *   non     n'amorce jamais rien (base de developpement qu'on veut garder vide)
- *   forcer  amorce meme si la base contient deja des donnees - DESTRUCTIF
+ *
+ *   non       n'amorce jamais rien (base de developpement qu'on veut garder vide)
+ *   forcer    amorce MEME SI la base contient deja des donnees - DESTRUCTIF
+ *   forcer-2, forcer-mars...  idem, pour forcer une nouvelle fois plus tard
  */
 const REGLAGE = (process.env.AMORCAGE_DEMO || '').trim().toLowerCase();
+
+/**
+ * Le forcage n'agit qu'UNE FOIS par valeur, et c'est essentiel.
+ *
+ * La variable se regle dans la console de l'hebergeur, ou elle reste en place
+ * tant qu'on ne l'a pas retiree a la main. Si elle agissait a chaque lecture,
+ * un service qui se met en veille toutes les quinze minutes rejouerait le
+ * remplissage a chaque reveil - et effacerait le travail reel saisi entre
+ * temps, indefiniment. Un oubli banal deviendrait une perte de donnees
+ * quotidienne.
+ *
+ * La valeur employee est donc conservee dans le marqueur : la relire ne
+ * declenche plus rien. Pour forcer a nouveau, on ecrit une valeur differente
+ * (`forcer-2`), ce qui est un geste explicite et non un reliquat.
+ */
+const JETON_FORCAGE = REGLAGE.startsWith('forcer') ? REGLAGE : null;
+
+function forcageNeuf(precedent) {
+  return Boolean(JETON_FORCAGE) && JETON_FORCAGE !== (precedent?.resume?.forcage || null);
+}
 
 /**
  * Repose les photos du jeu de demonstration manquantes dans uploads/.
@@ -135,16 +157,25 @@ async function amorcerDemonstration({ logger = console } = {}) {
     }
     verrouPris = true;
 
-    const dejaFait = await lireEtat(client);
-    if (dejaFait && REGLAGE !== 'forcer') {
-      if (dejaFait.etat === 'applique') restaurerPhotos(dejaFait.resume?.photos, logger);
-      return { etat: dejaFait.etat, raison: 'deja decide' };
+    const precedent = await lireEtat(client);
+    const forcer = forcageNeuf(precedent);
+
+    // `applique` est definitif : le jeu a bien ete pose. S'il a ete efface
+    // depuis, c'est une decision, pas un accident - on ne le remet pas.
+    if (precedent?.etat === 'applique' && !forcer) {
+      restaurerPhotos(precedent.resume?.photos, logger);
+      return { etat: 'applique', raison: 'deja pose' };
     }
+
+    // `ignore` ne l'est pas. Il dit seulement que la base etait occupee ce
+    // jour-la ; elle a pu etre videe depuis. On reevalue donc a chaque
+    // demarrage, ce qui evite d'avoir a intervenir en base pour effacer un
+    // refus devenu caduc.
 
     const comptes = await comptesMetier(client);
     const occupees = Object.entries(comptes).filter(([, n]) => Number(n) > 0);
 
-    if (occupees.length && REGLAGE !== 'forcer') {
+    if (occupees.length && !forcer) {
       const detail = occupees.map(([t, n]) => `${t}=${n}`).join(', ');
       logger.log(
         `[MACHIBEL] Jeu de demonstration non pose : la base contient deja des donnees (${detail}).\n`
@@ -155,14 +186,21 @@ async function amorcerDemonstration({ logger = console } = {}) {
       return { etat: 'ignore', raison: detail };
     }
 
-    logger.log('[MACHIBEL] Base vide : mise en place du jeu de demonstration (quelques minutes)...');
+    logger.log(
+      forcer
+        ? `[MACHIBEL] AMORCAGE_DEMO=${JETON_FORCAGE} : remplissage FORCE, les donnees existantes vont etre effacees.\n`
+          + '           Ce forcage n\'agira qu\'une fois : la variable peut rester en place sans danger.'
+        : '[MACHIBEL] Base vide : mise en place du jeu de demonstration (quelques minutes)...'
+    );
 
     // Chargement tardif : ce module pese un millier de lignes et n'a aucune
     // raison d'etre analyse a chaque demarrage d'un serveur deja amorce.
     const { remplir } = require('../../scripts/seed-demo');
     const { manifeste, bilan, problemes } = await remplir();
 
-    await inscrire(client, 'applique', { photos: manifeste, bilan, problemes });
+    // Le jeton de forcage est conserve : c'est lui qui empeche la meme valeur
+    // de tout reeffacer au prochain reveil du service.
+    await inscrire(client, 'applique', { photos: manifeste, bilan, problemes, forcage: JETON_FORCAGE });
 
     if (problemes.length) {
       logger.error(`[MACHIBEL] Jeu de demonstration pose, mais ${problemes.length} incoherence(s) relevee(s).`);

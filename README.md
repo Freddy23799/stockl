@@ -99,8 +99,11 @@ sur le serveur : le prochain deploiement s'en charge.
 - il ne s'execute **que si toutes les tables metier sont vides**. Une base qui
   porte le moindre produit, la moindre vente ou le moindre employe n'est pas
   touchee, et le journal le dit explicitement ;
-- l'issue (`applique` ou `ignore`) est inscrite en base, table `amorcages` : il
-  ne revient pas au deploiement suivant, meme si la base a ete videe depuis ;
+- une fois `applique`, c'est definitif : il ne revient pas au deploiement
+  suivant, meme si la base a ete videe depuis (table `amorcages`). Un refus
+  (`ignore`), lui, est reevalue a chaque demarrage : la base occupee ce jour-la
+  peut avoir ete videe depuis, et il ne faut pas devoir intervenir en base pour
+  effacer un refus devenu caduc ;
 - il tourne **apres** l'ouverture du port, en tache de fond. Le service repond
   normalement pendant les quelques minutes que dure le remplissage ;
 - il est transactionnel : interrompu, il ne laisse rien derriere lui.
@@ -110,6 +113,14 @@ sur le serveur : le prochain deploiement s'en charge.
 | *(non defini)* | Comportement decrit ci-dessus |
 | `non` | N'amorce jamais rien (base de dev qu'on veut garder vide) |
 | `forcer` | Amorce **meme si la base contient des donnees** — les efface |
+| `forcer-2`, `forcer-mars`... | Idem, pour forcer une nouvelle fois plus tard |
+
+Le forcage n'agit qu'**une seule fois par valeur**, et c'est essentiel : la
+variable se regle dans la console de l'hebergeur, ou elle reste en place tant
+qu'on ne l'a pas retiree. Si elle agissait a chaque lecture, un service qui se
+met en veille toutes les quinze minutes rejouerait le remplissage a chaque
+reveil, effacant le travail reel saisi entre temps. La valeur employee est donc
+conservee dans le marqueur ; pour forcer a nouveau, on en ecrit une differente.
 
 Les photos du jeu (produits, portraits, pieces des dossiers) sont versionnees
 dans `backend/seed-assets/photos/`, et non telechargees au demarrage. Deux
