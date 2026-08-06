@@ -6,7 +6,7 @@ const pool = require('../src/config/db');
 const config = require('../src/config');
 const { genererMatriculeUnique, genererReferenceCycleUnique, genererNumeroRecuUnique } = require('../src/utils/identifiants-rh');
 
-const { obtenirLot, urlPortrait, urlPhoto } = require('./lib/photos');
+const { obtenirLot, demandesPhotosDemo } = require('./lib/photos');
 const D = require('./lib/donnees');
 
 // -----------------------------------------------------------------------------
@@ -78,14 +78,21 @@ async function audit(client, { type, entiteId, utilisateurId, date, details, ava
 
 /* --- Photos --------------------------------------------------------------- */
 
-function copierVersUploads(source, sousDossier, nomFichier) {
+// Correspondance chemin depose dans uploads/ -> cle de l'image dans le lot
+// versionne. Conservee en base a la fin du remplissage : sur un hebergement
+// dont le disque est efface a chaque redemarrage, c'est elle qui permet de
+// reposer les photos sans avoir a rejouer le remplissage.
+let manifeste = {};
+
+function copierVersUploads(source, sousDossier, nomFichier, cle) {
   if (!source) return null;
   const dossier = path.join(config.uploadsDir, sousDossier);
   fs.mkdirSync(dossier, { recursive: true });
   const extension = path.extname(source) || '.jpg';
-  const destination = path.join(dossier, `${nomFichier}${extension}`);
-  fs.copyFileSync(source, destination);
-  return `uploads/${sousDossier}/${nomFichier}${extension}`;
+  const relatif = `uploads/${sousDossier}/${nomFichier}${extension}`;
+  fs.copyFileSync(source, path.join(dossier, `${nomFichier}${extension}`));
+  if (cle) manifeste[relatif] = cle;
+  return relatif;
 }
 
 /* --- Nettoyage ------------------------------------------------------------ */
@@ -196,7 +203,9 @@ async function creerEmployes(client, adminId, fonctions, photos) {
 
   for (const [index, e] of D.EMPLOYES.entries()) {
     const matricule = await genererMatriculeUnique(client);
-    const photo = copierVersUploads(photos.get(`portrait-${index}`), 'employes', `employe-${index + 1}`);
+    const photo = copierVersUploads(
+      photos.get(`portrait-${index}`), 'employes', `employe-${index + 1}`, `portrait-${index}`
+    );
     const horodatage = `${e.embauche}T08:${String(20 + (index % 30)).padStart(2, '0')}:00`;
 
     const { rows } = await client.query(
@@ -301,7 +310,9 @@ async function creerProduits(client, adminId, photos) {
     // fil des annees : de nouvelles gammes arrivent, ce qui se voit dans les
     // rapports comme un elargissement progressif de l'offre.
     const date = p.arrivee || jour(ajouterJours(new Date(D.DEBUT), Math.floor(index / 6) * 4));
-    const photo = copierVersUploads(photos.get(`produit-${index}`), 'produits', `produit-${index + 1}`);
+    const photo = copierVersUploads(
+      photos.get(`produit-${index}`), 'produits', `produit-${index + 1}`, `produit-${index}`
+    );
 
     const { rows } = await client.query(
       `INSERT INTO produits (nom, prix_vente, unite_stock, unite_achat, facteur_conversion,
@@ -1043,11 +1054,13 @@ async function creerDocuments(client, employes, adminId, photos) {
       fs.mkdirSync(dossier, { recursive: true });
 
       for (let page = 0; page < type.pages; page += 1) {
-        const source = photos.get(`doc-${index}-${rang}-${page}`);
+        const cle = `doc-${index}-${rang}-${page}`;
+        const source = photos.get(cle);
         if (!source) continue;
         const nomFichier = `piece-${document.id}-${page}.jpg`;
         fs.copyFileSync(source, path.join(dossier, nomFichier));
         const taille = fs.statSync(path.join(dossier, nomFichier)).size;
+        manifeste[`uploads/documents/${document.id}/${nomFichier}`] = cle;
 
         await client.query(
           `INSERT INTO employes_documents_fichiers
@@ -1317,7 +1330,17 @@ async function verifier(client) {
 
 /* --- Orchestration -------------------------------------------------------- */
 
-async function principal() {
+/**
+ * Pose le jeu de demonstration complet sur la base courante.
+ *
+ * ATTENTION : commence par vider toutes les tables metier. L'appelant est
+ * responsable de verifier qu'il n'y a rien a perdre - c'est ce que fait
+ * `src/db/amorcage-demo.js` avant de l'appeler au demarrage du serveur.
+ *
+ * @returns {{ manifeste: object, bilan: object, problemes: string[] }}
+ */
+async function remplir() {
+  manifeste = {};
   const client = await pool.connect();
   try {
     const { rows: admins } = await client.query(
@@ -1326,17 +1349,8 @@ async function principal() {
     if (!admins.length) throw new Error("Aucun compte administrateur : demarrez le serveur une fois d'abord.");
     const adminId = admins[0].id;
 
-    log('Telechargement des photos (mises en cache apres le premier passage)...');
-    const demandes = [];
-    D.EMPLOYES.forEach((e, i) => demandes.push({ cle: `portrait-${i}`, url: urlPortrait(e.sexe, e.portrait) }));
-    D.PRODUITS.forEach((p, i) => demandes.push({ cle: `produit-${i}`, url: urlPhoto(`machibel-produit-${i}`, 600, 600) }));
-    D.EMPLOYES.forEach((e, i) => {
-      D.DOCUMENTS_TYPES.forEach((t, r) => {
-        for (let page = 0; page < t.pages; page += 1) {
-          demandes.push({ cle: `doc-${i}-${r}-${page}`, url: urlPhoto(`machibel-doc-${i}-${r}-${page}`, 700, 950) });
-        }
-      });
-    });
+    log('Photos : lecture du lot versionne (telechargement si absent)...');
+    const demandes = demandesPhotosDemo();
     const photos = await obtenirLot(demandes, { journal: log });
     log(`Photos disponibles : ${[...photos.values()].filter(Boolean).length} / ${demandes.length}`);
 
@@ -1368,7 +1382,6 @@ async function principal() {
     if (problemes.length) {
       log(`${problemes.length} PROBLEME(S) DETECTE(S) :`);
       problemes.slice(0, 20).forEach((p) => log(`  - ${p}`));
-      process.exitCode = 1;
     } else {
       log('Coherence verifiee : stock, lots, paie, carriere et ventes concordent.');
     }
@@ -1395,6 +1408,8 @@ async function principal() {
     for (const [cle, valeur] of Object.entries(bilan)) {
       log(`  ${cle.padEnd(16)} ${valeur}`);
     }
+
+    return { manifeste, bilan, problemes };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -1403,12 +1418,21 @@ async function principal() {
   }
 }
 
-principal()
-  .then(() => pool.end())
-  .catch(async (err) => {
-    console.error('\nEchec du remplissage :', err.message);
-    console.error(err.stack);
-    await pool.end().catch(() => {});
-    process.exit(1);
-  });
+module.exports = { remplir };
+
+/* --- Execution en ligne de commande : `npm run seed-demo` ----------------- */
+
+if (require.main === module) {
+  remplir()
+    .then(({ problemes }) => {
+      if (problemes.length) process.exitCode = 1;
+      return pool.end();
+    })
+    .catch(async (err) => {
+      console.error('\nEchec du remplissage :', err.message);
+      console.error(err.stack);
+      await pool.end().catch(() => {});
+      process.exit(1);
+    });
+}
 

@@ -15,13 +15,14 @@ const app = require('./app');
 const pool = require('./config/db');
 const { runMigrations } = require('./db/migrate');
 const { bootstrapAdmin } = require('./db/bootstrap-admin');
+const { amorcerDemonstration } = require('./db/amorcage-demo');
 
 // multer ecrit dans ces dossiers sans les creer. Ils sont versionnes, donc
 // presents apres un deploiement ; mais un disque persistant monte sur
 // backend/uploads masque le contenu du depot et arrive vide, ce qui ferait
 // echouer tout envoi de photo avec un ENOENT.
 function preparerDossiersUploads() {
-  for (const sousDossier of ['produits', 'logo']) {
+  for (const sousDossier of ['produits', 'logo', 'employes', 'documents']) {
     fs.mkdirSync(path.join(config.uploadsDir, sousDossier), { recursive: true });
   }
 }
@@ -37,6 +38,17 @@ async function demarrer() {
   app.listen(config.port, () => {
     console.log(`MACHIBEL backend en ecoute sur le port ${config.port} (${config.env})`);
   });
+
+  // Volontairement APRES l'ouverture du port, et sans `await`.
+  //
+  // Le premier remplissage prend plusieurs minutes. Le faire avant l'ecoute,
+  // c'est un hebergeur qui n'obtient pas de reponse a sa sonde de sante,
+  // declare le deploiement en echec et redemarre le service - qui recommence
+  // depuis le debut, indefiniment.
+  //
+  // Une fois la base amorcee, ce passage ne fait plus qu'une lecture et la
+  // remise en place des photos : quelques millisecondes.
+  amorcerDemonstration();
 }
 
 demarrer().catch(async (err) => {

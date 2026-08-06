@@ -12,6 +12,21 @@ const https = require('https');
 
 const CACHE = path.join(__dirname, '..', '..', '.cache-photos');
 
+// Lot d'images versionne avec le code (voir scripts/preparer-photos-demo.js).
+//
+// En ligne, le remplissage se joue au demarrage du serveur : il ne peut pas
+// dependre de services publics d'images qui peuvent etre lents, limites en
+// debit ou indisponibles au moment precis du deploiement. Les images sont donc
+// embarquees dans le depot, deja reduites, et le telechargement ne sert plus
+// que de secours en developpement quand le lot n'a pas encore ete constitue.
+const LOT = path.join(__dirname, '..', '..', 'seed-assets', 'photos');
+
+/** Chemin d'une image du lot versionne, ou null si elle n'y est pas. */
+function depuisLot(cle) {
+  const chemin = path.join(LOT, `${cle}.jpg`);
+  return fs.existsSync(chemin) ? chemin : null;
+}
+
 function telecharger(url, destination, redirections = 0) {
   return new Promise((resoudre, rejeter) => {
     if (redirections > 5) return rejeter(new Error('Trop de redirections'));
@@ -51,6 +66,11 @@ function telecharger(url, destination, redirections = 0) {
  * @param {string} cle  nom stable, sert de nom de fichier dans le cache
  */
 async function obtenirImage(cle, url) {
+  // Le lot versionne prime : c'est la seule source disponible a coup sur en
+  // ligne, et elle contient deja des images reduites.
+  const embarquee = depuisLot(cle);
+  if (embarquee) return embarquee;
+
   fs.mkdirSync(CACHE, { recursive: true });
   const destination = path.join(CACHE, `${cle}.jpg`);
   if (fs.existsSync(destination) && fs.statSync(destination).size > 1024) return destination;
@@ -72,27 +92,105 @@ function urlPhoto(graine, largeur = 600, hauteur = 600) {
   return `https://picsum.photos/seed/${encodeURIComponent(graine)}/${largeur}/${hauteur}`;
 }
 
+// Dimensions demandees a la source, plutot qu'une reduction apres coup.
+//
+// Reencoder ces images ici ne servait a rien : l'encodeur JPEG en JavaScript
+// pur rend des fichiers plus lourds que ceux du service d'origine a qualite
+// egale, et le lot ne perdait que deux pour cent. Les demander directement a la
+// bonne taille les fait passer de dix-huit a six mega-octets, sans aucune perte
+// de qualite puisque c'est le service qui redimensionne et recompresse.
+//
+// Les valeurs sont choisies pour l'usage reel : une photo de produit s'affiche
+// dans une fiche, une piece de dossier se lit a l'ecran. Personne n'ouvre l'une
+// ni l'autre a la loupe.
+const TAILLES = {
+  produit: [420, 420],
+  document: [500, 680],
+};
+
+const patienter = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /**
  * Telecharge en parallele, mais par petits paquets : lancer quatre-vingts
  * requetes d'un coup fait tomber ces services publics en limitation de debit,
  * et on recupere alors des erreurs plutot que des images.
+ *
+ * Meme par paquets, une partie des demandes se fait refuser sur un lot de
+ * plusieurs centaines - un premier passage en a perdu cent quatre. On reprend
+ * donc les echecs, en espacant chaque tentative un peu plus : la limitation est
+ * temporaire par nature, il suffit de lui laisser le temps de retomber.
  */
-async function obtenirLot(demandes, { parallele = 6, journal = null } = {}) {
+async function obtenirLot(demandes, { parallele = 4, tentatives = 4, journal = null } = {}) {
   const resultats = new Map();
-  for (let i = 0; i < demandes.length; i += parallele) {
-    const paquet = demandes.slice(i, i + parallele);
-    await Promise.all(paquet.map(async ({ cle, url }) => {
-      try {
-        resultats.set(cle, await obtenirImage(cle, url));
-      } catch (err) {
-        // Une image manquante n'est pas bloquante : la fiche existera sans
-        // photo, et le systeme sait deja l'afficher (initiales, cadre vide).
-        resultats.set(cle, null);
-        journal?.(`  photo indisponible (${cle}) : ${err.message}`);
-      }
-    }));
+  let restantes = demandes;
+
+  for (let tentative = 1; tentative <= tentatives && restantes.length; tentative += 1) {
+    if (tentative > 1) {
+      const attente = 3000 * (tentative - 1);
+      journal?.(`  ${restantes.length} image(s) a reprendre, nouvelle tentative dans ${attente / 1000}s...`);
+      await patienter(attente);
+    }
+
+    const echecs = [];
+    for (let i = 0; i < restantes.length; i += parallele) {
+      const paquet = restantes.slice(i, i + parallele);
+      await Promise.all(paquet.map(async (demande) => {
+        try {
+          resultats.set(demande.cle, await obtenirImage(demande.cle, demande.url));
+        } catch (err) {
+          echecs.push(demande);
+          if (tentative === tentatives) {
+            // Une image manquante n'est pas bloquante : la fiche existera sans
+            // photo, et le systeme sait deja l'afficher (initiales, cadre vide).
+            resultats.set(demande.cle, null);
+            journal?.(`  photo indisponible (${demande.cle}) : ${err.message || 'echec reseau'}`);
+          }
+        }
+      }));
+      // Un souffle entre les paquets : c'est ce qui distingue un usage
+      // raisonnable d'un service public d'une rafale qu'il finit par refuser.
+      await patienter(120);
+    }
+    restantes = echecs;
   }
+
   return resultats;
 }
 
-module.exports = { obtenirImage, obtenirLot, urlPortrait, urlPhoto, CACHE };
+/**
+ * Liste complete des images du jeu de demonstration.
+ *
+ * Definie ici, et non dans le script de remplissage, parce que deux programmes
+ * doivent s'accorder au fichier pres : celui qui constitue le lot versionne et
+ * celui qui le consomme. Les cles ne dependent que d'un index, jamais d'un
+ * identifiant de base : elles restent donc les memes d'une execution a l'autre.
+ */
+function demandesPhotosDemo() {
+  const D = require('./donnees');
+  const demandes = [];
+
+  D.EMPLOYES.forEach((e, i) => demandes.push({
+    cle: `portrait-${i}`, url: urlPortrait(e.sexe, e.portrait), usage: 'portrait',
+  }));
+  D.PRODUITS.forEach((p, i) => demandes.push({
+    cle: `produit-${i}`, url: urlPhoto(`machibel-produit-${i}`, ...TAILLES.produit), usage: 'produit',
+  }));
+  D.EMPLOYES.forEach((e, i) => {
+    D.DOCUMENTS_TYPES.forEach((t, r) => {
+      for (let page = 0; page < t.pages; page += 1) {
+        demandes.push({
+          cle: `doc-${i}-${r}-${page}`,
+          url: urlPhoto(`machibel-doc-${i}-${r}-${page}`, ...TAILLES.document),
+          usage: 'document',
+        });
+      }
+    });
+  });
+
+  return demandes;
+}
+
+module.exports = {
+  obtenirImage, obtenirLot, urlPortrait, urlPhoto,
+  depuisLot, demandesPhotosDemo, CACHE, LOT,
+};

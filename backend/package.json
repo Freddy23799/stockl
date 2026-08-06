@@ -13,7 +13,9 @@
     "restore": "bash scripts/restore.sh",
     "check-integrity": "node src/db/check-integrity.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "seed-demo": "node scripts/seed-demo.js"
+    "seed-demo": "node scripts/seed-demo.js",
+    "preparer-photos-demo": "node scripts/preparer-photos-demo.js",
+    "amorcer-demo": "node src/db/amorcage-demo.js"
   },
   "keywords": [],
   "author": "",

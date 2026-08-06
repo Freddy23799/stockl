@@ -46,6 +46,9 @@ volontaire, pour ne jamais deployer avec un secret par defaut.
 | `npm run backup` | Sauvegarde la base + `uploads/` dans `backups/` |
 | `npm run restore -- <prefixe>` | Restaure une sauvegarde (voir `backend/scripts/restore.sh`) |
 | `npm run check-integrity` | Verifie les invariants critiques (stock = somme des lots, etc.), sans rien modifier |
+| `npm run seed-demo` | Repose le jeu de demonstration **en effacant tout le contenu metier** |
+| `npm run amorcer-demo` | Meme chose, mais uniquement si la base est vide (ce que fait le demarrage) |
+| `npm run preparer-photos-demo` | Reconstitue `backend/seed-assets/photos/` a partir des services d'images |
 
 **Sauvegardes** : `npm run backup` doit tourner quotidiennement via une tache
 planifiee (cron en dev, Planificateur de taches Windows en prod). Il sauvegarde
@@ -78,6 +81,47 @@ est irrecuperable. La personne le change ensuite elle-meme.
 
 Le dernier compte administrateur actif ne peut pas etre desactive — il n'existe
 aucune procedure de reinitialisation, cela fermerait le systeme definitivement.
+
+## Jeu de demonstration
+
+Sur une base **entierement vide**, le demarrage pose de lui-meme un historique
+complet allant de janvier 2024 a aujourd'hui : 16 employes avec arrivees,
+promotions et departs, 8 vendeuses, 86 produits, 10 fournisseurs, plus de
+6 000 ventes, les cycles de paie et leurs recus, les dossiers du personnel et
+le journal d'audit correspondant. Voir
+[backend/src/db/amorcage-demo.js](backend/src/db/amorcage-demo.js).
+
+C'est ce qui permet d'obtenir un systeme rempli en ligne sans avoir de terminal
+sur le serveur : le prochain deploiement s'en charge.
+
+**Ce qui l'empeche de nuire :**
+
+- il ne s'execute **que si toutes les tables metier sont vides**. Une base qui
+  porte le moindre produit, la moindre vente ou le moindre employe n'est pas
+  touchee, et le journal le dit explicitement ;
+- l'issue (`applique` ou `ignore`) est inscrite en base, table `amorcages` : il
+  ne revient pas au deploiement suivant, meme si la base a ete videe depuis ;
+- il tourne **apres** l'ouverture du port, en tache de fond. Le service repond
+  normalement pendant les quelques minutes que dure le remplissage ;
+- il est transactionnel : interrompu, il ne laisse rien derriere lui.
+
+| `AMORCAGE_DEMO` | Effet |
+|---|---|
+| *(non defini)* | Comportement decrit ci-dessus |
+| `non` | N'amorce jamais rien (base de dev qu'on veut garder vide) |
+| `forcer` | Amorce **meme si la base contient des donnees** — les efface |
+
+Les photos du jeu (produits, portraits, pieces des dossiers) sont versionnees
+dans `backend/seed-assets/photos/`, et non telechargees au demarrage. Deux
+raisons : dependre de services d'images tiers au moment precis d'un deploiement
+donnerait un catalogue sans photos le jour ou ils limitent le debit ; et surtout
+le plan gratuit n'a pas de disque persistant, donc `uploads/` est vide a chaque
+reveil du service. Le demarrage y repose les photos manquantes a partir du lot,
+en s'appuyant sur la correspondance conservee dans `amorcages.resume`.
+
+Pour **repartir d'un systeme neuf** chez le client : vider les tables metier,
+puis passer `amorcages.etat` a `ignore` — ou simplement demarrer une fois avec
+`AMORCAGE_DEMO=non`.
 
 ## Configuration
 
