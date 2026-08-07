@@ -85,7 +85,7 @@ async function badges(req, res) {
     // reimprime aujourd'hui, il doit porter le titre en vigueur aujourd'hui. Le
     // libelle fige dans la periode de carriere sert aux bulletins de paie, qui
     // eux doivent rester conformes a ce qui a ete verse a l'epoque.
-    `SELECT e.id, e.matricule, e.prenom, e.nom, e.photo, e.date_embauche,
+    `SELECT e.id, e.matricule, e.prenom, e.nom, e.photo, e.date_embauche, e.telephone,
             COALESCE(f.nom, c.fonction) AS fonction
        FROM employes e
        LEFT JOIN employes_carriere c ON c.employe_id = e.id AND c.date_fin IS NULL

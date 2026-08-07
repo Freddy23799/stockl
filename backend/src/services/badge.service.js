@@ -38,14 +38,57 @@ const GRILLE = { colonnes: 3, rangees: 3, ecart: 8 };
 
 const COULEUR = {
   bandeau: '#1b5fd0',
+  // Deux tons de bleu : un filet plus clair sous le bandeau donne au badge une
+  // assise, la ou un aplat unique se lit comme un rectangle colle en haut.
+  bandeauClair: '#4a86e8',
   bandeauTexte: '#ffffff',
+  bandeauTexteDoux: '#dbe6fb',
   texte: '#111827',
   doux: '#4b5563',
   tresDoux: '#9ca3af',
   bord: '#d1d5db',
   fondPhoto: '#eef2f7',
+  fondPied: '#f3f6fb',
   decoupe: '#c7ccd4',
 };
+
+/**
+ * Coordonnees de l'etablissement, sur une ligne.
+ *
+ * Un badge perdu doit pouvoir etre rapporte : sans un numero a appeler, la
+ * personne qui le ramasse n'a aucun moyen de savoir a qui le rendre.
+ *
+ * UN seul numero et la ville, pas davantage : sur 54 mm de large, deux numeros
+ * plus le quartier ne tiennent pas, et celui qui rapporte une carte n'appelle
+ * de toute facon que le premier.
+ */
+function contactEtablissement(e) {
+  const telephone = e.etablissement_telephone || e.etablissement_telephone_2;
+  const lieu = e.etablissement_ville || e.etablissement_quartier;
+  return [telephone && `Tel. ${telephone}`, lieu].filter(Boolean).join(' - ');
+}
+
+/**
+ * Tronque un texte pour qu'il tienne sur UNE ligne de la largeur donnee.
+ *
+ * `lineBreak: false` et `ellipsis: true` ne suffisent pas : le texte passe
+ * quand meme a la ligne et vient recouvrir ce qui suit. Sur une carte de 54 mm,
+ * le secteur d'activite recouvrait « CARTE PROFESSIONNELLE » et les
+ * coordonnees recouvraient la mention de pied. On mesure donc soi-meme.
+ *
+ * A appeler APRES avoir pose la police et le corps : `widthOfString` mesure
+ * avec la police courante.
+ */
+function ajuster(doc, texte, largeur) {
+  const propre = nettoyer(texte);
+  if (!propre) return '';
+  if (doc.widthOfString(propre) <= largeur) return propre;
+  let coupe = propre;
+  while (coupe.length > 1 && doc.widthOfString(`${coupe}...`) > largeur) {
+    coupe = coupe.slice(0, -1);
+  }
+  return `${coupe.trimEnd()}...`;
+}
 
 const FORMATS_IMPRIMABLES = ['.png', '.jpg', '.jpeg'];
 
@@ -107,6 +150,9 @@ function dessinerBadge(doc, x, y, { employe, etablissement, qr, logo }) {
   // Le bas du bandeau est reequarri : les coins arrondis ne doivent apparaitre
   // qu'en haut, la ou ils suivent le bord de la carte.
   doc.rect(x, y + hauteurBandeau - 4, L, 4).fillColor(COULEUR.bandeau).fill();
+  // Filet clair en pied de bandeau : il donne une assise a l'aplat, qui sans
+  // lui se lit comme un rectangle colle en haut de la carte.
+  doc.rect(x, y + hauteurBandeau, L, 1.6).fillColor(COULEUR.bandeauClair).fill();
   doc.restore();
 
   let xTexte = x + marge;
@@ -119,28 +165,33 @@ function dessinerBadge(doc, x, y, { employe, etablissement, qr, logo }) {
     }
   }
 
-  doc.font('Helvetica-Bold').fontSize(8).fillColor(COULEUR.bandeauTexte)
-    .text(nettoyer(etablissement.etablissement_nom || 'MACHIBEL').toUpperCase(),
-      xTexte, y + 11, { width: L - (xTexte - x) - marge, lineBreak: false, ellipsis: true });
+  const largeurBandeau = L - (xTexte - x) - marge;
 
-  if (etablissement.etablissement_activite || etablissement.etablissement_ville) {
-    doc.font('Helvetica').fontSize(5.5).fillColor('#dbe6fb')
-      .text(nettoyer(etablissement.etablissement_activite || etablissement.etablissement_ville),
-        xTexte, y + 21, { width: L - (xTexte - x) - marge, lineBreak: false, ellipsis: true });
+  doc.font('Helvetica-Bold').fontSize(8).fillColor(COULEUR.bandeauTexte);
+  doc.text(
+    ajuster(doc, (etablissement.etablissement_nom || 'MACHIBEL').toUpperCase(), largeurBandeau),
+    xTexte, y + 11, { width: largeurBandeau, lineBreak: false }
+  );
+
+  const activite = etablissement.etablissement_activite || etablissement.etablissement_ville;
+  if (activite) {
+    doc.font('Helvetica').fontSize(5.5).fillColor(COULEUR.bandeauTexteDoux);
+    doc.text(ajuster(doc, activite, largeurBandeau), xTexte, y + 21,
+      { width: largeurBandeau, lineBreak: false });
   }
 
-  doc.font('Helvetica-Bold').fontSize(5.5).fillColor('#dbe6fb')
-    .text("CARTE PROFESSIONNELLE", xTexte, y + 30,
-      { width: L - (xTexte - x) - marge, characterSpacing: 0.7, lineBreak: false });
+  doc.font('Helvetica-Bold').fontSize(5.5).fillColor(COULEUR.bandeauTexteDoux)
+    .text('CARTE PROFESSIONNELLE', xTexte, y + 30,
+      { width: largeurBandeau, characterSpacing: 0.7, lineBreak: false });
 
   /* --- Photo --- */
   // La photo occupe l'espace disponible entre le bandeau et la bande basse :
   // un visage plus grand se reconnait de plus loin, et c'est la premiere chose
   // qu'on regarde sur un badge.
   const photoL = 66;
-  const photoH = 88;
+  const photoH = 82;
   const photoX = x + (L - photoL) / 2;
-  const photoY = y + hauteurBandeau + 9;
+  const photoY = y + hauteurBandeau + 8;
 
   doc.save();
   rectangleArrondi(doc, photoX, photoY, photoL, photoH, 5);
@@ -174,17 +225,32 @@ function dessinerBadge(doc, x, y, { employe, etablissement, qr, logo }) {
   doc.restore();
 
   /* --- Identite --- */
-  const yNom = photoY + photoH + 8;
-  doc.font('Helvetica-Bold').fontSize(9.5).fillColor(COULEUR.texte)
-    .text(nettoyer(`${employe.prenom} ${employe.nom}`).toUpperCase(), x + 5, yNom,
-      { width: L - 10, align: 'center', lineBreak: false, ellipsis: true });
+  const yNom = photoY + photoH + 7;
+  const largeurIdentite = L - 10;
 
-  doc.font('Helvetica').fontSize(7).fillColor(COULEUR.doux)
-    .text(nettoyer(employe.fonction || 'Personnel'), x + 5, yNom + 12,
-      { width: L - 10, align: 'center', lineBreak: false, ellipsis: true });
+  doc.font('Helvetica-Bold').fontSize(9.5).fillColor(COULEUR.texte);
+  doc.text(
+    ajuster(doc, `${employe.prenom} ${employe.nom}`.toUpperCase(), largeurIdentite),
+    x + 5, yNom, { width: largeurIdentite, align: 'center', lineBreak: false }
+  );
+
+  doc.font('Helvetica').fontSize(7).fillColor(COULEUR.doux);
+  doc.text(ajuster(doc, employe.fonction || 'Personnel', largeurIdentite),
+    x + 5, yNom + 11.5, { width: largeurIdentite, align: 'center', lineBreak: false });
+
+  // Telephone de la personne. Sur un badge d'entreprise c'est l'information la
+  // plus consultee apres le nom : elle evite de passer par un annuaire pour
+  // joindre un collegue, et permet de rappeler le porteur quand la carte est
+  // retrouvee.
+  if (employe.telephone) {
+    doc.font('Helvetica-Bold').fontSize(6.5).fillColor(COULEUR.bandeau);
+    doc.text(ajuster(doc, employe.telephone, largeurIdentite), x + 5, yNom + 21.5,
+      { width: largeurIdentite, align: 'center', lineBreak: false });
+  }
 
   /* --- Bande basse : matricule a gauche, QR a droite --- */
-  const yBas = y + H - 52;
+  const hauteurPied = 21;
+  const yBas = y + H - hauteurPied - 46;
 
   doc.save();
   doc.moveTo(x + marge, yBas - 4).lineTo(x + L - marge, yBas - 4)
@@ -204,16 +270,39 @@ function dessinerBadge(doc, x, y, { employe, etablissement, qr, logo }) {
 
   if (qr) {
     try {
-      const taille = 40;
+      const taille = 38;
       doc.image(qr, x + L - marge - taille, yBas + 2, { fit: [taille, taille] });
     } catch {
       // Sans QR, le badge reste valable a la lecture humaine.
     }
   }
 
-  doc.font('Helvetica').fontSize(4.6).fillColor(COULEUR.tresDoux)
-    .text('Document authentifiable par scan', x + marge, y + H - 10,
-      { width: L - marge * 2, lineBreak: false });
+  /* --- Pied : coordonnees de l'etablissement --- */
+  // Un badge se perd. Sans un numero a appeler, la personne qui le ramasse n'a
+  // aucun moyen de savoir a qui le rendre - et la carte finit a la poubelle.
+  const yPied = y + H - hauteurPied;
+  doc.save();
+  doc.rect(x, yPied, L, hauteurPied - 3.5).fillColor(COULEUR.fondPied).fill();
+  // Le bas du pied suit l'arrondi de la carte.
+  rectangleArrondi(doc, x, yPied, L, hauteurPied, 7);
+  doc.fillColor(COULEUR.fondPied).fill();
+  doc.restore();
+
+  const largeurPied = L - marge * 2;
+  const contact = contactEtablissement(etablissement);
+
+  if (contact) {
+    doc.font('Helvetica-Bold').fontSize(5).fillColor(COULEUR.doux);
+    doc.text(ajuster(doc, contact, largeurPied), x + marge, yPied + 4.5,
+      { width: largeurPied, align: 'center', lineBreak: false });
+  }
+
+  doc.font('Helvetica').fontSize(4.6).fillColor(COULEUR.tresDoux);
+  doc.text(
+    ajuster(doc, 'Carte personnelle - a restituer au depart.', largeurPied),
+    x + marge, yPied + (contact ? 11.5 : 7),
+    { width: largeurPied, align: 'center', lineBreak: false }
+  );
 }
 
 /** Traits de coupe discrets, pour decouper la planche proprement. */
