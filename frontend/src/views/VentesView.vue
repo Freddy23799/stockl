@@ -1,6 +1,6 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch } from 'vue'
-import api from '../api/client'
+import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
 import { useAuthStore } from '../stores/auth'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
@@ -49,10 +49,32 @@ const articlesPanier = computed(() =>
   lignesPanier.value.reduce((s, l) => s + Number(l.quantite || 0), 0)
 )
 
+// Filtre par rayon : sur un catalogue de plusieurs dizaines de references, il
+// evite de faire defiler toute la grille pour retrouver une famille d'articles.
+const rayonActif = ref('')
+
+const rayons = computed(() => {
+  const parId = new Map()
+  for (const p of produits.value) {
+    if (!p.categorie_id) continue
+    const compte = parId.get(p.categorie_id)
+    if (compte) compte.nombre += 1
+    else parId.set(p.categorie_id, { id: p.categorie_id, nom: p.categorie, nombre: 1 })
+  }
+  return [...parId.values()].sort((a, b) => a.nom.localeCompare(b.nom))
+})
+
 const produitsFiltres = computed(() => {
   const q = rechercheProduit.value.trim().toLowerCase()
-  if (!q) return produits.value
-  return produits.value.filter((p) => p.nom.toLowerCase().includes(q))
+  let liste = produits.value
+  if (rayonActif.value) {
+    liste = liste.filter((p) => String(p.categorie_id) === String(rayonActif.value))
+  }
+  if (!q) return liste
+  // La recherche porte aussi sur le rayon et la marque : en caisse on tape
+  // aussi bien « riz » que « Bijou », et les deux doivent ramener l'etagere.
+  return liste.filter((p) => `${p.nom} ${p.categorie || ''} ${p.marque || ''}`
+    .toLowerCase().includes(q))
 })
 
 const produitChoisi = computed(
@@ -475,6 +497,29 @@ onUnmounted(() => {
             <span class="small muted">{{ produitsFiltres.length }} produit(s)</span>
           </div>
 
+          <!-- Filtres par rayon. Masques quand aucun produit n'est classe :
+               une barre de filtres vide n'apprend rien et prend la place. -->
+          <div v-if="rayons.length" class="barre-rayons">
+            <button
+              type="button"
+              class="puce-rayon"
+              :class="{ 'is-active': !rayonActif }"
+              @click="rayonActif = ''"
+            >
+              Tout <span class="puce-compte">{{ produits.length }}</span>
+            </button>
+            <button
+              v-for="r in rayons"
+              :key="r.id"
+              type="button"
+              class="puce-rayon"
+              :class="{ 'is-active': String(rayonActif) === String(r.id) }"
+              @click="rayonActif = String(rayonActif) === String(r.id) ? '' : r.id"
+            >
+              {{ r.nom }} <span class="puce-compte">{{ r.nombre }}</span>
+            </button>
+          </div>
+
           <div class="card-body card-body-flush">
             <TableSkeleton v-if="loading" :rows="5" :cols="2" />
 
@@ -498,25 +543,44 @@ onUnmounted(() => {
               </RouterLink>
             </EmptyState>
 
-            <ul v-else class="picker">
-              <li v-for="p in produitsFiltres" :key="p.id">
-                <button
-                  type="button"
-                  class="picker-item"
-                  :class="{ 'is-active': Number(produitSelectionne) === p.id }"
-                  @click="choisirProduit(p)"
-                >
-                  <span class="picker-name">{{ p.nom }}</span>
-                  <span class="picker-price tnum">{{ formatMontant(p.prix_vente) }}</span>
+            <!-- Des cartes plutot qu'une liste de lignes : en caisse, on
+                 reconnait un article a son flacon bien avant de lire son nom.
+                 Vingt references dont les noms ne different que par un parfum
+                 ou un volume se confondent en liste ; avec la photo et le prix
+                 en gros, on verifie d'un coup d'oeil qu'on tient le bon. -->
+            <div v-else class="grille-produits">
+              <button
+                v-for="p in produitsFiltres"
+                :key="p.id"
+                type="button"
+                class="carte-produit"
+                :class="{
+                  'is-active': Number(produitSelectionne) === p.id,
+                  'est-epuise': Number(p.quantite_stock) <= 0,
+                }"
+                @click="choisirProduit(p)"
+              >
+                <span class="carte-visuel">
+                  <img v-if="p.photo" :src="assetUrl(p.photo, { taille: 'vignette' })" :alt="p.nom" loading="lazy" />
+                  <Icon v-else name="package" :size="22" />
                   <span
-                    class="badge"
+                    class="carte-stock"
                     :class="Number(p.quantite_stock) <= Number(p.seuil_alerte) ? 'danger' : 'success'"
                   >
                     {{ formatQuantite(p.quantite_stock) }} {{ p.unite_stock }}
                   </span>
-                </button>
-              </li>
-            </ul>
+                  <span v-if="Number(produitSelectionne) === p.id" class="carte-coche">
+                    <Icon name="check" :size="13" />
+                  </span>
+                </span>
+                <span class="carte-nom">{{ p.nom }}</span>
+                <span v-if="p.marque || p.categorie" class="carte-classement">
+                  <span v-if="p.marque" class="carte-marque">{{ p.marque }}</span>
+                  <span v-if="p.categorie" class="carte-rayon">{{ p.categorie }}</span>
+                </span>
+                <span class="carte-prix tnum">{{ formatMontant(p.prix_vente) }}</span>
+              </button>
+            </div>
           </div>
 
           <div v-if="produitChoisi" class="card-foot" style="align-items: flex-end">
@@ -891,5 +955,235 @@ tbody tr.is-ajoutee { animation: ligne-ajoutee 1s ease-out; }
   font-weight: 680;
   color: var(--text-h);
   letter-spacing: -0.025em;
+}
+</style>
+
+<style scoped>
+/* -----------------------------------------------------------------------------
+   Selection des produits en cartes.
+
+   En caisse, on reconnait un article a son flacon bien avant de lire son nom.
+   Vingt references dont les libelles ne different que par un parfum ou un
+   volume se confondent en liste ; avec la photo et le prix en gros, la
+   personne qui vend verifie d'un coup d'oeil qu'elle tient le bon article.
+   ----------------------------------------------------------------------------- */
+
+.barre-rayons {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  /* Le defilement horizontal reste dans la barre : le corps de page ne doit
+     jamais partir de cote sur un petit ecran. */
+  scrollbar-width: thin;
+}
+
+.puce-rayon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  font-size: 0.8125rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.puce-rayon:hover { border-color: var(--primary); }
+
+.puce-rayon.is-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.puce-compte {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  opacity: 0.72;
+}
+
+.grille-produits {
+  display: grid;
+  /* minmax(0, …) et non une largeur libre : sans le 0, un nom long empeche la
+     colonne de retrecir et toute la grille deborde. */
+  grid-template-columns: repeat(auto-fill, minmax(min(148px, 100%), 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.carte-produit {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  /* Sans ceci, un element interne plus large que la carte l'empeche de
+     retrecir : `min-width` vaut `auto` par defaut sur un element de grille. */
+  min-width: 0;
+  /* La carte est un <button>, et la regle globale des boutons impose
+     `white-space: nowrap` - ce qui s'herite. Sans cette remise a zero, le nom
+     du produit ne passe jamais a la ligne : il est rogne au bord de la carte,
+     et « Apres-shampooing nourrissant 400 mL » s'affiche « Apres-shampooing
+     nourris ». */
+  white-space: normal;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg-card);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.14s, box-shadow 0.14s, transform 0.14s;
+}
+
+.carte-produit:hover {
+  border-color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.carte-produit.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+/* Un article a zero reste visible et cliquable : la personne qui vend doit
+   pouvoir constater qu'il est epuise, pas se demander ou il est passe. */
+.carte-produit.est-epuise { opacity: 0.55; }
+
+.carte-visuel {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  /* La carte est un conteneur flex en colonne : sans cela l'image se laisse
+     comprimer en hauteur des que le nom prend deux lignes, et la pastille de
+     stock posee en bas se retrouve coupee par le `overflow: hidden`. */
+  flex-shrink: 0;
+  border-radius: var(--r-sm);
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  overflow: hidden;
+}
+
+.carte-visuel img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.carte-stock {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  /* Fond opaque : pose sur une photo, un badge translucide devient illisible
+     des que le cliche est clair. */
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text);
+  max-width: calc(100% - 8px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.carte-stock.danger { color: var(--danger); border-color: var(--danger); }
+.carte-stock.success { color: var(--success); border-color: var(--success); }
+
+.carte-coche {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+}
+
+.carte-nom {
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  color: var(--text-h);
+  /* `max-width` et non `min-width: 0` : la carte est un conteneur flex en
+     colonne, donc la largeur du nom est sa taille TRANSVERSALE, et flex-shrink
+     n'agit que sur l'axe principal. Sans cette borne, un libelle comme « Encens
+     Bakhour Al Haramain (au gramme) » impose sa largeur naturelle - mesure a
+     390 px : 238 px de texte dans une carte de 153 px - et fait defiler toute
+     la page de cote. */
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  /* Deux lignes maximum : au dela, les cartes de la meme rangee prennent des
+     hauteurs differentes et la grille devient bancale.
+     Uniquement la forme prefixee. La propriete standard `line-clamp` est
+     desormais implementee par Chromium comme un raccourci qui pose
+     `continue: discard` : l'element calcule alors `display: flow-root` au lieu
+     de `-webkit-box`, le decoupage en lignes ne s'applique plus et le nom est
+     rogne d'un seul trait au bord de la carte au lieu de passer a la ligne. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  /* Hauteur reservee a deux lignes : les prix restent alignes d'une carte a
+     l'autre, qu'un nom tienne sur une ligne ou deux. */
+  min-height: calc(2 * 1.3em);
+}
+
+.carte-classement {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  /* Meme raison que pour le nom : une marque au libelle long deborderait la
+     carte sur l'axe transversal. */
+  max-width: 100%;
+}
+
+.carte-marque,
+.carte-rayon {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.carte-marque {
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.carte-rayon { color: var(--text-muted); padding: 1px 0; }
+
+.carte-prix {
+  margin-top: auto;
+  font-size: 0.9375rem;
+  font-weight: 680;
+  color: var(--text-h);
+  letter-spacing: -0.02em;
+}
+
+/* Ecrans tactiles et petits ecrans : des cartes plus grandes, donc des cibles
+   plus sures, et deux colonnes qui restent lisibles sur un telephone. */
+@media (pointer: coarse), (max-width: 700px) {
+  .grille-produits {
+    grid-template-columns: repeat(auto-fill, minmax(min(132px, 100%), 1fr));
+    gap: 9px;
+    padding: 11px;
+  }
+
+  .puce-rayon { padding: 7px 13px; }
 }
 </style>
