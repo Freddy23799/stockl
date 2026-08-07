@@ -380,6 +380,27 @@ async function verifier(req, res) {
     });
   }
 
+  if (resultat.type === 'FACTURE') {
+    const { rows: factures } = await pool.query(
+      `SELECT v.id, v.numero_facture, v.date, v.montant_total, v.type,
+              vd.nom AS vendeuse_nom,
+              (SELECT count(*)::int FROM ventes_lignes WHERE vente_id = v.id) AS articles
+         FROM ventes v
+         LEFT JOIN vendeuses vd ON vd.id = v.vendeuse_id
+        WHERE v.numero_facture = $1`,
+      [resultat.identifiant]
+    );
+    const facture = factures[0];
+    if (!facture) {
+      return res.json({
+        valide: false,
+        type: 'FACTURE',
+        raison: 'Signature correcte, mais cette facture est introuvable dans le systeme',
+      });
+    }
+    return res.json({ valide: true, type: 'FACTURE', donnees: facture });
+  }
+
   const { rows } = await pool.query(
     `SELECT v.numero_recu, v.montant, v.paye_le, v.mode_paiement, v.est_solde,
             l.matricule_snapshot, l.nom_complet_snapshot, l.fonction_snapshot, l.net_a_payer,

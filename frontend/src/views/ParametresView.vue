@@ -183,6 +183,23 @@ const DESCRIPTION_MODULE = {
   },
 }
 
+// Sous-options : elles dependent d'un module et n'apparaissent que s'il est
+// actif. La facturation n'est pas un module a part - une facture n'a de sens
+// que la ou il y a des ventes - et l'activer separement n'aurait rien voulu
+// dire.
+const SOUS_OPTIONS = {
+  module_ventes: [
+    {
+      champ: 'module_factures',
+      titre: 'Facture automatique',
+      desc: 'Chaque vente recoit un numero de facture a son enregistrement, et la facture se '
+        + "telecharge depuis l'historique. La numerotation repart a 1 chaque annee. Les ventes "
+        + "deja enregistrees ne recoivent pas de numero apres coup : le leur donner les "
+        + 'intercalerait au milieu de factures posterieures.',
+    },
+  ],
+}
+
 // Le scanner n'est monte qu'a l'ouverture : le composant demande la camera des
 // son montage, et la reclamer au chargement de la page serait intrusif.
 const scannerVisible = ref(false)
@@ -216,6 +233,29 @@ function basculerModule(champ) {
     return
   }
   appliquerModule(champ, true)
+}
+
+/**
+ * Bascule d'une sous-option.
+ *
+ * Sans confirmation dans les deux sens, contrairement aux modules : eteindre la
+ * facturation ne fait disparaitre aucune page ni aucune donnee. Les ventes deja
+ * numerotees gardent leur numero et leur facture reste imprimable ; seules les
+ * ventes suivantes n'en recevront plus.
+ */
+async function basculerSousOption(sous) {
+  const valeur = !parametres.value[sous.champ]
+  moduleEnCours.value = sous.champ
+  try {
+    const { data } = await api.put('/parametres', { [sous.champ]: valeur })
+    parametres.value = data
+    toasts.succes(`${sous.titre} ${valeur ? 'activee' : 'desactivee'}`)
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur lors du changement')
+    parametres.value[sous.champ] = !valeur
+  } finally {
+    moduleEnCours.value = null
+  }
 }
 
 /* --- Methode de valorisation -------------------------------------------- */
@@ -638,26 +678,52 @@ async function copier(texte, libelle) {
           </div>
         </div>
         <div class="card-body stack">
-          <div
-            v-for="(info, champ) in DESCRIPTION_MODULE"
-            :key="champ"
-            class="switch-row"
-            :class="{ 'is-on': parametres[champ] }"
-            @click="basculerModule(champ)"
-          >
-            <span class="switch-text">
-              <span class="switch-title">{{ info.titre }}</span>
-              <span class="switch-desc">{{ info.desc }}</span>
-            </span>
-            <button
-              type="button"
-              class="switch"
+          <template v-for="(info, champ) in DESCRIPTION_MODULE" :key="champ">
+            <div
+              class="switch-row"
               :class="{ 'is-on': parametres[champ] }"
-              :disabled="moduleEnCours === champ"
-              :aria-label="`Basculer ${info.titre}`"
-              @click.stop="basculerModule(champ)"
-            />
-          </div>
+              @click="basculerModule(champ)"
+            >
+              <span class="switch-text">
+                <span class="switch-title">{{ info.titre }}</span>
+                <span class="switch-desc">{{ info.desc }}</span>
+              </span>
+              <button
+                type="button"
+                class="switch"
+                :class="{ 'is-on': parametres[champ] }"
+                :disabled="moduleEnCours === champ"
+                :aria-label="`Basculer ${info.titre}`"
+                @click.stop="basculerModule(champ)"
+              />
+            </div>
+
+            <!-- Sous-options du module, en retrait et seulement s'il est actif :
+                 proposer la facturation alors que les ventes sont eteintes
+                 n'aurait aucun sens. -->
+            <div
+              v-for="sous in (parametres[champ] ? (SOUS_OPTIONS[champ] || []) : [])"
+              :key="sous.champ"
+              class="switch-row switch-sous"
+              :class="{ 'is-on': parametres[sous.champ] }"
+              @click="basculerSousOption(sous)"
+            >
+              <span class="switch-text">
+                <span class="switch-title">
+                  <Icon name="arrowRight" :size="13" /> {{ sous.titre }}
+                </span>
+                <span class="switch-desc">{{ sous.desc }}</span>
+              </span>
+              <button
+                type="button"
+                class="switch"
+                :class="{ 'is-on': parametres[sous.champ] }"
+                :disabled="moduleEnCours === sous.champ"
+                :aria-label="`Basculer ${sous.titre}`"
+                @click.stop="basculerSousOption(sous)"
+              />
+            </div>
+          </template>
 
           <p class="alert alert-info">
             <Icon name="info" :size="16" />
@@ -1040,4 +1106,25 @@ async function copier(texte, libelle) {
 .champ-large { grid-column: 1 / -1; }
 
 .champ-requis { color: var(--danger); margin-left: 2px; }
+</style>
+
+<style scoped>
+/* Sous-option d'un module : en retrait et sur un fond plus discret, pour qu'on
+   voie d'un coup d'oeil qu'elle depend de l'interrupteur au-dessus. */
+.switch-sous {
+  margin-left: 22px;
+  border-left: 2px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.switch-sous .switch-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 700px) {
+  .switch-sous { margin-left: 12px; }
+}
 </style>

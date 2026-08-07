@@ -36,6 +36,9 @@ const CHAMPS_SYSTEME = [
   'methode_valorisation', 'logo_path',
   'module_ventes', 'module_fournisseurs', 'module_depenses',
   'module_employes', 'module_paie', 'module_badges',
+  // Sous-option du module Ventes et non un module a part : une facture n'a de
+  // sens que la ou il y a des ventes.
+  'module_factures',
 ];
 
 // Volontairement permissif : les formats de numero varient trop d'un pays a

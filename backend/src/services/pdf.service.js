@@ -189,12 +189,15 @@ class DocumentRapport {
    * @param {string} [options.sousTitre]    precision sous le titre
    * @param {string} [options.periode]      periode couverte, deja mise en forme
    * @param {string} [options.auteur]       personne qui a demande le document
+   * @param {boolean} [options.sansPeriode] piece unique et datee (facture, recu) :
+   *   la mention de periode n'a pas lieu d'etre
    */
-  constructor({ etablissement = {}, titre, sousTitre = '', periode = '', auteur = '' }) {
+  constructor({ etablissement = {}, titre, sousTitre = '', periode = '', auteur = '', sansPeriode = false }) {
     this.etablissement = etablissement;
     this.titre = titre;
     this.sousTitre = sousTitre;
     this.periode = periode;
+    this.sansPeriode = sansPeriode;
     this.auteur = auteur;
     this.devise = etablissement.devise || 'FCFA';
     this.genereLe = new Date();
@@ -331,8 +334,15 @@ class DocumentRapport {
 
     // Bandeau d'identification du tirage : sans lui, deux impressions du meme
     // rapport a deux dates sont indiscernables une fois posees sur un bureau.
+    // « Toutes périodes confondues » a du sens sur un rapport qui balaie une
+    // plage de dates. Sur une piece unique et datee - une facture, un recu - la
+    // mention n'a aucun sens et laisse croire a un document de synthese.
+    const mentionPeriode = this.sansPeriode
+      ? ''
+      : (this.periode ? `Période : ${nettoyer(this.periode)}` : 'Toutes périodes confondues');
+
     const mentions = [
-      this.periode ? `Période : ${nettoyer(this.periode)}` : 'Toutes périodes confondues',
+      mentionPeriode,
       `Édité le ${formatDateLongue(this.genereLe)} à ${deuxChiffres(this.genereLe.getHours())}:${deuxChiffres(this.genereLe.getMinutes())}`,
       this.auteur ? `Par ${nettoyer(this.auteur)}` : '',
     ].filter(Boolean);
@@ -393,6 +403,43 @@ class DocumentRapport {
         width: LARGEUR_UTILE, lineGap: TAILLE.corps * (INTERLIGNE - 1),
       });
     doc.y += 8;
+  }
+
+  /**
+   * Cartouche d'authenticite : QR signe et sa legende.
+   *
+   * Sans lui, un document de ce genre se refait sous traitement de texte en
+   * cinq minutes. Le code porte une signature verifiable depuis l'ecran
+   * Parametres > Verification, et c'est cette signature - pas le papier - qui
+   * fait foi.
+   *
+   * @param {Buffer} png     image du QR deja encodee
+   * @param {string} legende texte court identifiant la piece
+   */
+  blocVerification(png, legende) {
+    if (!png) return;
+    const doc = this.doc;
+    const cote = 62;
+    this.reserver(cote + 16);
+    const y = doc.y + 6;
+
+    doc.image(png, MARGE.gauche, y, { width: cote, height: cote });
+
+    const xTexte = MARGE.gauche + cote + 12;
+    const largeurTexte = LARGEUR_UTILE - cote - 12;
+    doc.font('Helvetica-Bold').fontSize(TAILLE.petit).fillColor(COULEUR.texte)
+      .text(nettoyer(legende), xTexte, y + 6, { width: largeurTexte });
+    doc.font('Helvetica').fontSize(TAILLE.pied).fillColor(COULEUR.tresDoux)
+      .text(
+        nettoyer(
+          "Document authentifiable. Scannez ce code depuis l'ecran Parametres > Verification "
+          + "pour confirmer qu'il a bien ete emis par ce systeme et qu'il n'a pas ete modifie."
+        ),
+        xTexte, doc.y + 2,
+        { width: largeurTexte, lineGap: TAILLE.pied * (INTERLIGNE - 1) }
+      );
+
+    doc.y = Math.max(doc.y, y + cote) + 8;
   }
 
   /**

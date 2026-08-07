@@ -4,6 +4,7 @@ import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
 import { useAuthStore } from '../stores/auth'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
+import { telechargerDocument } from '../utils/telecharger'
 import PageHeader from '../components/ui/PageHeader.vue'
 import BoutonExport from '../components/ui/BoutonExport.vue'
 import Tabs from '../components/ui/Tabs.vue'
@@ -376,6 +377,27 @@ async function changerPage(nouvellePage) {
 async function chargerProduits() {
   const { data } = await api.get('/produits')
   produits.value = data
+}
+
+/* --- Facture -------------------------------------------------------------- */
+
+// Le telechargement passe par le gestionnaire de l'application, comme les
+// autres documents : la barre de progression apparait, et un refus du serveur
+// remonte lisiblement au lieu d'ouvrir un onglet vide.
+const factureEnCours = ref(null)
+
+async function telechargerFacture(v) {
+  factureEnCours.value = v.id
+  try {
+    await telechargerDocument(`/exports/factures/${v.id}.pdf`, {
+      libelle: `Facture ${v.numero_facture}`,
+      nomFichier: `facture-${v.numero_facture}.pdf`,
+    })
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || "La facture n'a pas pu etre generee")
+  } finally {
+    factureEnCours.value = null
+  }
 }
 
 async function ouvrirDetail(v) {
@@ -812,7 +834,10 @@ onUnmounted(() => {
                 <tr v-for="v in ventes" :key="v.id">
                   <td>
                     <div class="td-strong nowrap">{{ formatDate(v.date) }}</div>
-                    <div class="small muted">#{{ v.id }}</div>
+                    <div class="small muted">
+                      <span v-if="v.numero_facture" class="nowrap">{{ v.numero_facture }}</span>
+                      <span v-else>#{{ v.id }}</span>
+                    </div>
                   </td>
                   <td>
                     <span class="badge" :class="v.type === 'directe' ? 'info' : 'accent'">
@@ -824,6 +849,22 @@ onUnmounted(() => {
                   <td class="td-actions">
                     <button type="button" class="btn-sm btn-ghost" title="Detail" @click="ouvrirDetail(v)">
                       <Icon name="eye" :size="15" />
+                    </button>
+                    <!-- Le bouton n'apparait que sur les ventes qui portent un
+                         numero. Une vente enregistree avant l'activation de la
+                         facturation n'en a pas, et n'en recevra pas apres coup :
+                         lui donner un numero de la serie courante l'intercalerait
+                         au milieu de factures posterieures. -->
+                    <button
+                      v-if="v.numero_facture"
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      :title="`Facture ${v.numero_facture}`"
+                      :disabled="factureEnCours === v.id"
+                      @click="telechargerFacture(v)"
+                    >
+                      <span v-if="factureEnCours === v.id" class="spinner" />
+                      <Icon v-else name="receipt" :size="15" />
                     </button>
                   </td>
                 </tr>

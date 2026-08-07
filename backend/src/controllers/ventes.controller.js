@@ -2,6 +2,7 @@ const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
 const { sortieStockPourVente, StockInsuffisantError, IncoherenceStockError } = require('../services/stock.service');
 const { getPagination } = require('../utils/pagination');
+const { reserverNumero, facturationActive } = require('../services/facture.service');
 
 async function list(req, res) {
   const { from, to, vendeuse_id, type } = req.query;
@@ -86,9 +87,18 @@ async function create(req, res) {
       vendeuseNom = vendeuse.nom;
     }
 
+    // Le numero de facture est attribue ICI, dans la transaction de la vente :
+    // il ne bougera plus jamais, et une facture reimprimee dans six mois portera
+    // exactement le meme. Le calculer au moment d'imprimer donnerait un numero
+    // different a chaque tirage.
+    const numeroFacture = (await facturationActive(client))
+      ? await reserverNumero(client)
+      : null;
+
     const { rows: venteRows } = await client.query(
-      `INSERT INTO ventes (type, vendeuse_id, montant_total, auteur_id) VALUES ($1, $2, 0, $3) RETURNING *`,
-      [type, type === 'vendeuse' ? vendeuse_id : null, req.user.id]
+      `INSERT INTO ventes (type, vendeuse_id, montant_total, auteur_id, numero_facture)
+       VALUES ($1, $2, 0, $3, $4) RETURNING *`,
+      [type, type === 'vendeuse' ? vendeuse_id : null, req.user.id, numeroFacture]
     );
     const vente = venteRows[0];
 
