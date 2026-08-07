@@ -141,6 +141,45 @@ Pour **repartir d'un systeme neuf** chez le client : vider les tables metier,
 puis passer `amorcages.etat` a `ignore` — ou simplement demarrer une fois avec
 `AMORCAGE_DEMO=non`.
 
+## Mises a jour des donnees deja en place
+
+Les migrations font evoluer le schema ; elles ne peuvent rien pour les donnees
+deja saisies. Quand une version ajoute une notion — le rayon et la marque d'un
+produit, par exemple — les lignes existantes arrivent vides et le restent : la
+fonctionnalite est en place mais ne montre rien, et il n'y a ni terminal ni
+acces direct a la base pour reprendre le catalogue a la main.
+
+Les **enrichissements** comblent ce trou. Ce sont des traitements de donnees
+nommes, joues une seule fois par base, au demarrage, juste apres les migrations
+et avant l'ouverture du port. Voir
+[backend/src/db/enrichissements/](backend/src/db/enrichissements/).
+
+| Enrichissement | Effet |
+|---|---|
+| `001-rayons-produits` | Cree les 9 rayons et classe les produits existants d'apres leur nom |
+| `002-marques-demonstration` | Cree les marques du catalogue de demonstration et les attribue |
+
+Les regles a retenir pour en ecrire un :
+
+- il doit rester **court**. Le port n'est pas encore ouvert : le remplissage
+  long, c'est l'amorcage, qui tourne apres l'ecoute ;
+- il ne touche que les lignes **non renseignees** (`WHERE categorie_id IS NULL`)
+  et n'ecrase jamais une valeur posee a la main ;
+- ce qu'il ne sait pas deduire, il le **laisse vide**. Un rayon faux coute plus
+  cher a l'exploitant qu'un rayon vide, et c'est pourquoi le classement se
+  deduit du nom du produit : un article dont le nom ne dit rien reste sans
+  rayon plutot que d'atterrir dans un fourre-tout ;
+- ce qui ne vaut que pour la demonstration se protege derriere le marqueur
+  `amorcages` (`002` ne s'applique pas sur la base d'un vrai commerce : aucune
+  regle ne peut deviner le fabricant d'un article sans risquer de coller un
+  nom faux sur de la vraie marchandise) ;
+- s'il n'a rien a traiter pour l'instant, il ne s'inscrit pas et sera reexamine
+  au demarrage suivant. C'est ce qui permet a une base vide au demarrage de
+  recevoir quand meme le traitement une fois amorcee — le serveur repasse
+  derriere l'amorcage pour cette raison ;
+- une entree livree ne se modifie plus : une base qui l'a deja jouee ne la
+  rejouera pas. Un correctif se livre sous un nouveau numero.
+
 ## Configuration
 
 Toute la configuration vit dans [backend/src/config/index.js](backend/src/config/index.js),

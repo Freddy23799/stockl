@@ -16,6 +16,7 @@ const pool = require('./config/db');
 const { runMigrations } = require('./db/migrate');
 const { bootstrapAdmin } = require('./db/bootstrap-admin');
 const { amorcerDemonstration } = require('./db/amorcage-demo');
+const { appliquerEnrichissements } = require('./db/enrichissements');
 
 // multer ecrit dans ces dossiers sans les creer. Ils sont versionnes, donc
 // presents apres un deploiement ; mais un disque persistant monte sur
@@ -35,6 +36,13 @@ async function demarrer() {
   await runMigrations();
   await bootstrapAdmin();
 
+  // Avant l'ecoute, comme les migrations : une notion ajoutee par une mise a
+  // jour doit etre renseignee sur les donnees existantes AVANT que l'API ne les
+  // serve, sans quoi le premier ecran affiche un catalogue a moitie classe.
+  // Ces traitements doivent donc rester courts - le remplissage long, c'est
+  // l'amorcage ci-dessous, et il tourne apres l'ouverture du port.
+  await appliquerEnrichissements();
+
   app.listen(config.port, () => {
     console.log(`MACHIBEL backend en ecoute sur le port ${config.port} (${config.env})`);
   });
@@ -48,7 +56,13 @@ async function demarrer() {
   //
   // Une fois la base amorcee, ce passage ne fait plus qu'une lecture et la
   // remise en place des photos : quelques millisecondes.
-  amorcerDemonstration();
+  //
+  // Les enrichissements repassent derriere : sur une base vide, ils n'avaient
+  // rien a traiter tout a l'heure et ne se sont pas inscrits. Le catalogue
+  // vient d'arriver, c'est maintenant qu'ils s'appliquent.
+  amorcerDemonstration()
+    .then(() => appliquerEnrichissements())
+    .catch(() => {});
 }
 
 demarrer().catch(async (err) => {

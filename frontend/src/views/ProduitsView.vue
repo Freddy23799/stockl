@@ -443,6 +443,12 @@ async function envoyerPhoto() {
                 </td>
                 <td data-label="Produit" class="td-titre">
                   <div class="td-strong">{{ p.nom }}</div>
+                  <!-- Le rayon et la marque servent a filtrer et a chercher : les
+                       montrer ici evite d'ouvrir la fiche pour verifier qu'un
+                       article est bien classe. -->
+                  <div v-if="p.categorie || p.marque" class="small muted mt-2">
+                    {{ [p.categorie, p.marque].filter(Boolean).join(' - ') }}
+                  </div>
                   <span v-if="!p.actif" class="badge mt-2">Archive</span>
                 </td>
                 <td data-label="Prix" class="td-num td-strong tnum">{{ formatMontant(p.prix_vente) }}</td>
