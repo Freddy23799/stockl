@@ -141,6 +141,26 @@ Pour **repartir d'un systeme neuf** chez le client : vider les tables metier,
 puis passer `amorcages.etat` a `ignore` — ou simplement demarrer une fois avec
 `AMORCAGE_DEMO=non`.
 
+## Le logo survit aux redemarrages
+
+Le plan gratuit n'a pas de disque persistant : `uploads/` est vide a chaque
+reveil du service. Les photos de demonstration sont reposees depuis le lot
+versionne du depot, mais le logo vient de l'exploitant et ne peut etre
+versionne nulle part. Un logo envoye depuis Parametres disparaissait donc au
+premier reveil, et l'en-tete de l'application comme celui de tous les PDF se
+retrouvait vide sans que rien ne le signale.
+
+L'envoi ecrit desormais l'image **dans la base** en plus du disque
+(`parametres.logo_donnees`), et le demarrage la repose dans `uploads/` si le
+fichier manque. Une image, quelques dizaines de kilo-octets, modifiee une fois
+par an : le cout est negligeable et c'est le seul endroit qui survit.
+`logo_path` reste la source pour tout le reste du code — ni le service PDF ni
+le frontend n'ont bouge.
+
+Si le chemin pointe dans le vide et que la base n'a pas de copie — un logo
+envoye avant cette version — le demarrage revient au logo livre avec le depot
+et le dit dans le journal. Il suffit de renvoyer le sien.
+
 ## Mises a jour des donnees deja en place
 
 Les migrations font evoluer le schema ; elles ne peuvent rien pour les donnees

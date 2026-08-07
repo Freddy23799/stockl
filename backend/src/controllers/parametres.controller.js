@@ -1,4 +1,7 @@
+const fs = require('fs');
+const path = require('path');
 const pool = require('../config/db');
+const config = require('../config');
 const { logAudit } = require('../db/audit');
 const { finaliserFichier, nettoyerAnciennesVersions } = require('../middleware/upload.middleware');
 const { invaliderCacheModules } = require('../middleware/module.middleware');
@@ -90,9 +93,19 @@ function validerEtablissement(corps) {
 
 /* --- Lecture -------------------------------------------------------------- */
 
+// Le logo est conserve en base pour survivre aux redemarrages (migration 019).
+// Il n'a rien a faire dans la reponse : `SELECT *` le renverrait a chaque appel
+// sous forme de tableau d'octets JSON, soit des centaines de kilo-octets pour
+// une image que le client va de toute facon chercher par son URL.
+function sansBinaire(ligne) {
+  if (!ligne) return ligne;
+  const { logo_donnees, ...reste } = ligne;
+  return reste;
+}
+
 async function get(req, res) {
   const { rows } = await pool.query('SELECT * FROM parametres WHERE id = 1');
-  res.json(rows[0]);
+  res.json(sansBinaire(rows[0]));
 }
 
 /* --- Ecriture ------------------------------------------------------------- */
@@ -160,7 +173,7 @@ async function update(req, res) {
     // Le cache des interrupteurs doit tomber tout de suite : sinon une
     // desactivation resterait sans effet pendant quelques secondes.
     invaliderCacheModules();
-    res.json(apres);
+    res.json(sansBinaire(apres));
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -177,13 +190,20 @@ async function uploadLogo(req, res) {
   const relativePath = finaliserFichier(req.file, 'logo', 'logo-machibel');
   nettoyerAnciennesVersions('logo', 'logo-machibel', relativePath);
 
+  // Copie en base, en plus du fichier. L'hebergement en service n'a pas de
+  // disque persistant : sans cette copie, le logo envoye ici disparait au
+  // premier redemarrage et l'en-tete de tous les documents se retrouve vide.
+  // Le fichier reste la source pour le reste du code, il est simplement remis
+  // en place au demarrage a partir de ces octets.
+  const octets = fs.readFileSync(path.join(config.uploadsDir, relativePath.replace(/^uploads[/\\]/, '')));
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const { rows: avantRows } = await client.query('SELECT logo_path FROM parametres WHERE id = 1');
     const { rows } = await client.query(
-      'UPDATE parametres SET logo_path = $1 WHERE id = 1 RETURNING *',
-      [relativePath]
+      'UPDATE parametres SET logo_path = $1, logo_donnees = $2, logo_type = $3 WHERE id = 1 RETURNING *',
+      [relativePath, octets, req.file.mimetype || null]
     );
     await logAudit(client, {
       typeOperation: 'parametres_logo_modifie',
@@ -194,7 +214,7 @@ async function uploadLogo(req, res) {
       apres: { logo_path: relativePath },
     });
     await client.query('COMMIT');
-    res.json(rows[0]);
+    res.json(sansBinaire(rows[0]));
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

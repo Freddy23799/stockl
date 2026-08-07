@@ -17,6 +17,7 @@ const { runMigrations } = require('./db/migrate');
 const { bootstrapAdmin } = require('./db/bootstrap-admin');
 const { amorcerDemonstration } = require('./db/amorcage-demo');
 const { appliquerEnrichissements } = require('./db/enrichissements');
+const { restaurerLogo } = require('./db/restaurer-logo');
 
 // multer ecrit dans ces dossiers sans les creer. Ils sont versionnes, donc
 // presents apres un deploiement ; mais un disque persistant monte sur
@@ -42,6 +43,11 @@ async function demarrer() {
   // Ces traitements doivent donc rester courts - le remplissage long, c'est
   // l'amorcage ci-dessous, et il tourne apres l'ouverture du port.
   await appliquerEnrichissements();
+
+  // A chaque demarrage : `uploads/` est vide au reveil d'un service sans disque
+  // persistant, et l'en-tete de l'application comme celui des PDF pointent vers
+  // le logo par son chemin.
+  await restaurerLogo();
 
   app.listen(config.port, () => {
     console.log(`MACHIBEL backend en ecoute sur le port ${config.port} (${config.env})`);
