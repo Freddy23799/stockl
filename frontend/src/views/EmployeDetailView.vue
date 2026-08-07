@@ -14,6 +14,7 @@ import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import StatCard from '../components/ui/StatCard.vue'
 import Icon from '../components/ui/Icon.vue'
+import VisionneuseFichier from '../components/ui/VisionneuseFichier.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -400,6 +401,16 @@ function estImage(fichier) {
   return /^image\//.test(fichier.type_mime || '')
 }
 
+/* --- Consultation d'une piece --------------------------------------------- */
+
+// La visionneuse recoit TOUT le document, pas seulement la piece cliquee : un
+// contrat de trois pages se feuillette sans refermer et rouvrir la fenetre.
+const visionneuse = ref(null)
+
+function ouvrirVisionneuse(doc, index) {
+  visionneuse.value = { fichiers: doc.fichiers, index, titre: doc.nom }
+}
+
 /* --- Badge ---------------------------------------------------------------- */
 
 async function telechargerBadge() {
@@ -674,22 +685,25 @@ onMounted(charger)
               </div>
 
               <div class="fichiers">
-                <div v-for="f in doc.fichiers" :key="f.id" class="fichier-cadre">
-                  <a
+                <div v-for="(f, i) in doc.fichiers" :key="f.id" class="fichier-cadre">
+                  <!-- Un bouton et non un lien : la piece s'ouvre PAR-DESSUS la
+                       fiche. Avec un lien en nouvel onglet, on quittait
+                       l'application pour se retrouver devant le lecteur du
+                       systeme, et il fallait retrouver son chemin pour revenir. -->
+                  <button
+                    type="button"
                     class="fichier"
-                    :href="assetUrl(f.chemin)"
-                    target="_blank"
-                    rel="noopener"
                     :title="f.nom_original"
+                    @click="ouvrirVisionneuse(doc, i)"
                   >
-                    <img v-if="estImage(f)" :src="assetUrl(f.chemin)" alt="" loading="lazy" />
+                    <img v-if="estImage(f)" :src="assetUrl(f.chemin, { taille: 'vignette' })" alt="" loading="lazy" />
                     <span v-else class="fichier-icone"><Icon name="receipt" :size="20" /></span>
                     <span class="fichier-nom">{{ f.nom_original }}</span>
                     <span class="fichier-taille">
                       {{ formatTaille(f.taille_octets) }}
                       <span v-if="gain(f)" class="gain">−{{ gain(f) }} %</span>
                     </span>
-                  </a>
+                  </button>
                   <button
                     v-if="doc.fichiers.length > 1"
                     type="button"
@@ -962,6 +976,14 @@ onMounted(charger)
       @confirm="supprimerDocument"
       @cancel="aSupprimer = null"
     />
+
+    <VisionneuseFichier
+      v-if="visionneuse"
+      :fichiers="visionneuse.fichiers"
+      :index-initial="visionneuse.index"
+      :titre="visionneuse.titre"
+      @close="visionneuse = null"
+    />
   </div>
 </template>
 
@@ -1066,14 +1088,23 @@ onMounted(charger)
   grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
   padding: 12px 13px;
 }
+/* C'est un <button> depuis que la piece s'ouvre dans l'application : il faut
+   donc annuler ce que la regle globale des boutons lui applique - remplissage,
+   disposition en ligne, centrage - sinon la vignette se retrouve dans un cadre
+   trop grand et le nom cesse d'etre aligne a gauche. */
 .fichier {
   display: block;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  font: inherit;
   border: 1px solid var(--border);
   border-radius: var(--r-sm, 6px);
   overflow: hidden;
   text-decoration: none;
   color: inherit;
   background: var(--bg-subtle);
+  cursor: pointer;
 }
 .fichier:hover { border-color: var(--accent); }
 .fichier img { display: block; width: 100%; height: 88px; object-fit: cover; }
