@@ -87,6 +87,165 @@ async function create(req, res) {
   }
 }
 
+// Modification d'un compte par un administrateur.
+//
+// Sans cela, une erreur de saisie a la creation - un prenom mal orthographie,
+// un nom de famille incomplet - etait definitive : il ne restait qu'a bloquer
+// le compte et a en creer un autre, en perdant le lien entre les ecritures du
+// journal et la personne.
+//
+// L'identifiant de connexion n'est PAS refait automatiquement quand le nom
+// change : la personne s'en sert tous les jours et le connait par coeur. Il
+// faut le demander explicitement (`regenerer_identifiant`), et l'interface
+// affiche alors le nouveau pour qu'on puisse le lui transmettre.
+async function modifier(req, res) {
+  const { id } = req.params;
+  const { prenom, nom, email, regenerer_identifiant } = req.body;
+
+  if (!prenom || !String(prenom).trim() || !nom || !String(nom).trim()) {
+    return res.status(400).json({ message: 'Le prenom et le nom sont requis' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: existantsRows } = await client.query(
+      `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
+         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    if (existantsRows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Utilisateur introuvable' });
+    }
+    const existant = existantsRows[0];
+
+    const nomUtilisateur = regenerer_identifiant
+      ? await genererNomUtilisateurUnique(client, prenom, nom, { exclureId: Number(id) })
+      : existant.nom_utilisateur;
+
+    // L'email n'est ecrit que si le corps le porte. Sans ce test, une requete
+    // qui ne parle que du nom effacerait l'adresse au passage - un PATCH ne
+    // doit pas toucher a ce qu'on ne lui a pas demande.
+    const emailAEcrire = email === undefined ? existant.email : (email || null);
+
+    const { rows } = await client.query(
+      `UPDATE utilisateurs
+          SET prenom = $1, nom = $2, email = $3, nom_utilisateur = $4
+        WHERE id = $5
+      RETURNING id, prenom, nom, nom_utilisateur, email, role, actif, created_at`,
+      [String(prenom).trim(), String(nom).trim(), emailAEcrire, nomUtilisateur, id]
+    );
+
+    await logAudit(client, {
+      typeOperation: 'utilisateur_modification',
+      entiteId: Number(id),
+      utilisateurId: req.user?.id,
+      details: {
+        ...libellesCompte(rows[0]),
+        identifiant_regenere: nomUtilisateur !== existant.nom_utilisateur,
+      },
+      avant: etatUtilisateurPourAudit(existant),
+      apres: etatUtilisateurPourAudit(rows[0]),
+    });
+
+    await client.query('COMMIT');
+    res.json({
+      ...rows[0],
+      // Renvoye seulement quand il a change : c'est ce que l'interface montre
+      // dans son encart "a transmettre".
+      ancien_nom_utilisateur: nomUtilisateur !== existant.nom_utilisateur
+        ? existant.nom_utilisateur
+        : undefined,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      return res.status(409).json({ message: 'Cet identifiant ou cet email est deja utilise' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Reinitialisation du mot de passe d'un AUTRE compte.
+//
+// Le seul recours quand quelqu'un a oublie le sien : il n'existe aucune
+// procedure d'envoi par email, et le mot de passe n'est stocke qu'en hash, donc
+// personne - pas meme l'administrateur - ne peut le relire. Sans cette action,
+// un compte dont le mot de passe est perdu etait definitivement mort.
+//
+// Le nouveau mot de passe est genere par le systeme et renvoye UNE SEULE FOIS,
+// comme a la creation. Toutes les sessions ouvertes de ce compte sont coupees :
+// si quelqu'un s'en servait sans y avoir droit, la reinitialisation le met
+// dehors immediatement.
+async function reinitialiserMotDePasse(req, res) {
+  const { id } = req.params;
+
+  // Son propre mot de passe passe par l'ecran "Mon mot de passe", qui exige
+  // l'ancien et renvoie un jeton neuf. Passer par ici se couperait la session
+  // en cours pour un resultat moins bon.
+  if (Number(id) === req.user?.id) {
+    return res.status(409).json({
+      message: 'Pour votre propre compte, utilisez « Mon mot de passe » : '
+        + 'la session reste ouverte et vous choisissez vous-meme le nouveau.',
+      code: 'AUTO_REINITIALISATION',
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows: existantsRows } = await client.query(
+      `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
+         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
+      [id]
+    );
+    if (existantsRows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Utilisateur introuvable' });
+    }
+    const existant = existantsRows[0];
+
+    const motDePasse = genererMotDePasse();
+    const passwordHash = await bcrypt.hash(motDePasse, 10);
+
+    await client.query(
+      `UPDATE utilisateurs
+          SET password_hash = $1,
+              tokens_invalides_avant = date_trunc('second', now())
+        WHERE id = $2`,
+      [passwordHash, id]
+    );
+
+    // Ni le mot de passe ni son empreinte n'entrent au journal : la ligne dit
+    // qui a reinitialise quel compte, et rien de plus.
+    await logAudit(client, {
+      typeOperation: 'utilisateur_reinitialisation_mot_de_passe',
+      entiteId: Number(id),
+      utilisateurId: req.user?.id,
+      details: { ...libellesCompte(existant), sessions_coupees: true },
+    });
+
+    await client.query('COMMIT');
+    res.json({
+      id: existant.id,
+      prenom: existant.prenom,
+      nom: existant.nom,
+      nom_utilisateur: existant.nom_utilisateur,
+      mot_de_passe_initial: motDePasse,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 const LONGUEUR_MOT_DE_PASSE_MIN = 8;
 
 // Changement de son propre mot de passe. Indispensable : le premier compte est
@@ -299,4 +458,7 @@ async function reactiver(req, res) {
   }
 }
 
-module.exports = { list, create, changerMotDePasse, desactiver, reactiver };
+module.exports = {
+  list, create, modifier, reinitialiserMotDePasse,
+  changerMotDePasse, desactiver, reactiver,
+};

@@ -407,6 +407,78 @@ function fermerCompte() {
   compteVisible.value = false
 }
 
+/* --- Modification d'un compte -------------------------------------------- */
+
+// Sans cet ecran, une faute de frappe a la creation etait definitive : il ne
+// restait qu'a bloquer le compte et a en refaire un, en coupant le lien entre
+// le journal d'audit et la personne.
+const compteAModifier = ref(null)
+const compteModifForm = reactive({ prenom: '', nom: '', email: '', regenerer_identifiant: false })
+const compteModifErreur = ref('')
+const compteModifSoumission = ref(false)
+
+function ouvrirModification(u) {
+  Object.assign(compteModifForm, {
+    prenom: u.prenom || '',
+    nom: u.nom || '',
+    email: u.email || '',
+    regenerer_identifiant: false,
+  })
+  compteModifErreur.value = ''
+  compteAModifier.value = u
+}
+
+async function enregistrerModification() {
+  compteModifSoumission.value = true
+  compteModifErreur.value = ''
+  try {
+    const { data } = await api.patch(`/utilisateurs/${compteAModifier.value.id}`, compteModifForm)
+    // Un identifiant refait doit etre transmis a la personne : on le montre
+    // plutot que de le laisser decouvrir a la prochaine connexion ratee.
+    if (data.ancien_nom_utilisateur) {
+      toasts.succes(`Nouvel identifiant : ${data.nom_utilisateur}`)
+    } else {
+      toasts.succes('Compte modifie')
+    }
+    compteAModifier.value = null
+    await charger()
+    // Si l'admin modifie son propre compte, l'entete de l'application porte
+    // encore l'ancien nom tant que la session n'a pas ete relue.
+    if (data.id === auth.user?.id) await auth.restoreSession()
+  } catch (err) {
+    compteModifErreur.value = err.response?.data?.message || 'Erreur lors de la modification'
+  } finally {
+    compteModifSoumission.value = false
+  }
+}
+
+/* --- Reinitialisation du mot de passe ------------------------------------ */
+
+// Seul recours quand un mot de passe est perdu : il n'est stocke qu'en hash et
+// aucun envoi par email n'existe. Sans cela, un compte devenait inutilisable.
+const compteAReinitialiser = ref(null)
+const reinitialisationEnCours = ref(false)
+const compteReinitialise = ref(null)
+
+async function confirmerReinitialisation() {
+  reinitialisationEnCours.value = true
+  try {
+    const u = compteAReinitialiser.value
+    const { data } = await api.post(`/utilisateurs/${u.id}/reinitialiser-mot-de-passe`)
+    compteAReinitialiser.value = null
+    compteReinitialise.value = {
+      personne: `${data.prenom} ${data.nom}`,
+      nom_utilisateur: data.nom_utilisateur,
+      mot_de_passe: data.mot_de_passe_initial,
+    }
+  } catch (err) {
+    toasts.erreur(err.response?.data?.message || 'Erreur lors de la reinitialisation')
+    compteAReinitialiser.value = null
+  } finally {
+    reinitialisationEnCours.value = false
+  }
+}
+
 const aDesactiver = ref(null)
 const desactivationEnCours = ref(false)
 
@@ -880,6 +952,27 @@ async function copier(texte, libelle) {
                   </td>
                   <td data-label="Cree le" class="td-num small muted nowrap hide-sm">{{ formatDateCourt(u.created_at) }}</td>
                   <td data-label="" class="td-actions">
+                    <button
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      title="Modifier ce compte"
+                      @click="ouvrirModification(u)"
+                    >
+                      <Icon name="edit" :size="15" />
+                    </button>
+                    <!-- Reinitialiser SON PROPRE mot de passe passe par
+                         « Mon mot de passe », qui garde la session ouverte et
+                         laisse choisir le nouveau. Le serveur refuse aussi ce
+                         cas ; l'interface ne propose pas l'impasse. -->
+                    <button
+                      v-if="u.id !== auth.user?.id"
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      title="Reinitialiser le mot de passe"
+                      @click="compteAReinitialiser = u"
+                    >
+                      <Icon name="key" :size="15" />
+                    </button>
                     <!-- Le compte connecte n'expose aucune de ces deux actions :
                          se bloquer soi-meme fermerait la session en cours. Le
                          serveur refuse aussi le cas, l'interface ne fait que ne
@@ -1032,6 +1125,104 @@ async function copier(texte, libelle) {
           </button>
         </template>
         <button v-else type="button" class="primary" @click="fermerCompte">J'ai note ces identifiants</button>
+      </template>
+    </Modal>
+
+    <!-- ============ Modale modification de compte ============ -->
+    <Modal v-if="compteAModifier" title="Modifier le compte" @close="compteAModifier = null">
+      <form id="form-compte-modif" @submit.prevent="enregistrerModification">
+        <div class="field-row">
+          <div class="field">
+            <label>Prenom</label>
+            <input v-model="compteModifForm.prenom" required />
+          </div>
+          <div class="field">
+            <label>Nom</label>
+            <input v-model="compteModifForm.nom" required />
+          </div>
+        </div>
+        <div class="field">
+          <label>Adresse email <span class="muted small">(facultative)</span></label>
+          <input v-model="compteModifForm.email" type="email" />
+        </div>
+
+        <div class="field">
+          <label class="row" style="gap: 8px; cursor: pointer">
+            <input v-model="compteModifForm.regenerer_identifiant" type="checkbox" style="width: auto" />
+            <span>Refaire aussi l'identifiant de connexion</span>
+          </label>
+          <p class="field-hint">
+            Identifiant actuel : <code>{{ compteAModifier.nom_utilisateur }}</code>.
+            Il ne change pas tout seul quand le nom est corrige — la personne s'en sert tous les
+            jours. Cochez cette case si elle doit vraiment en changer : le nouveau vous sera
+            affiche.
+          </p>
+        </div>
+
+        <p v-if="compteModifErreur" class="alert alert-danger">
+          <Icon name="alert" :size="16" /><span>{{ compteModifErreur }}</span>
+        </p>
+      </form>
+
+      <template #footer>
+        <button type="button" @click="compteAModifier = null">Annuler</button>
+        <button type="submit" form="form-compte-modif" class="primary" :disabled="compteModifSoumission">
+          <span v-if="compteModifSoumission" class="spinner" />
+          Enregistrer
+        </button>
+      </template>
+    </Modal>
+
+    <!-- ============ Reinitialisation du mot de passe ============ -->
+    <ConfirmDialog
+      v-if="compteAReinitialiser"
+      title="Reinitialiser le mot de passe ?"
+      :message="`Un nouveau mot de passe sera genere pour ${compteAReinitialiser.prenom} ${compteAReinitialiser.nom} et affiche une seule fois. Ses sessions ouvertes seront fermees immediatement.`"
+      confirm-label="Reinitialiser"
+      :busy="reinitialisationEnCours"
+      @confirm="confirmerReinitialisation"
+      @cancel="compteAReinitialiser = null"
+    />
+
+    <Modal v-if="compteReinitialise" title="Nouveau mot de passe" @close="compteReinitialise = null">
+      <div class="stack">
+        <p>
+          Mot de passe reinitialise pour <strong>{{ compteReinitialise.personne }}</strong>.
+          Notez-le et transmettez-le : <strong>il ne sera plus jamais affiche</strong>.
+        </p>
+
+        <div class="identifiants">
+          <div class="identifiant-ligne">
+            <span class="small muted">Identifiant</span>
+            <div class="row" style="gap: 8px">
+              <code class="identifiant-valeur">{{ compteReinitialise.nom_utilisateur }}</code>
+              <button type="button" class="btn-sm btn-ghost" title="Copier" @click="copier(compteReinitialise.nom_utilisateur, 'Identifiant')">
+                <Icon name="copy" :size="15" />
+              </button>
+            </div>
+          </div>
+          <div class="identifiant-ligne">
+            <span class="small muted">Nouveau mot de passe</span>
+            <div class="row" style="gap: 8px">
+              <code class="identifiant-valeur">{{ compteReinitialise.mot_de_passe }}</code>
+              <button type="button" class="btn-sm btn-ghost" title="Copier" @click="copier(compteReinitialise.mot_de_passe, 'Mot de passe')">
+                <Icon name="copy" :size="15" />
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <p class="alert alert-warning">
+          <Icon name="warning" :size="16" />
+          <span>
+            Il n'est enregistre que sous forme chiffree : irrecuperable une fois cette fenetre
+            fermee. La personne pourra le changer elle-meme depuis Parametres.
+          </span>
+        </p>
+      </div>
+
+      <template #footer>
+        <button type="button" class="primary" @click="compteReinitialise = null">J'ai note</button>
       </template>
     </Modal>
 

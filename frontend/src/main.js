@@ -4,6 +4,7 @@ import './style.css'
 import App from './App.vue'
 import router from './router'
 import { useThemeStore } from './stores/theme'
+import { demarrerMisesAJour } from './pwa'
 
 const app = createApp(App)
 const pinia = createPinia()
@@ -16,3 +17,7 @@ useThemeStore(pinia).appliquer()
 
 app.use(router)
 app.mount('#app')
+
+// Apres le montage : la verification des mises a jour ne doit pas retarder le
+// premier affichage.
+demarrerMisesAJour()

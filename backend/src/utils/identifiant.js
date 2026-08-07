@@ -20,8 +20,12 @@ function construireBase(prenom, nom) {
 /**
  * Genere un nom d'utilisateur unique. En cas de collision (deux "Jean Dupont"),
  * un suffixe numerique est ajoute : jean.dupont, jean.dupont2, jean.dupont3...
+ *
+ * `exclureId` sert a la regeneration : sans lui, refaire l'identifiant d'un
+ * compte qui s'appelle deja `jean.dupont` rendrait `jean.dupont2`, le compte
+ * entrant en collision avec lui-meme.
  */
-async function genererNomUtilisateurUnique(client, prenom, nom) {
+async function genererNomUtilisateurUnique(client, prenom, nom, { exclureId = null } = {}) {
   const base = construireBase(prenom, nom);
   if (!base) {
     throw new Error('Le prenom et le nom ne permettent pas de construire un identifiant');
@@ -30,8 +34,8 @@ async function genererNomUtilisateurUnique(client, prenom, nom) {
   for (let suffixe = 1; suffixe <= 100; suffixe += 1) {
     const candidat = suffixe === 1 ? base : `${base}${suffixe}`;
     const { rows } = await client.query(
-      'SELECT 1 FROM utilisateurs WHERE nom_utilisateur = $1',
-      [candidat]
+      'SELECT 1 FROM utilisateurs WHERE nom_utilisateur = $1 AND ($2::int IS NULL OR id <> $2)',
+      [candidat, exclureId]
     );
     if (rows.length === 0) return candidat;
   }
