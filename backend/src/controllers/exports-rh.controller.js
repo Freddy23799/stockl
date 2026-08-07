@@ -223,7 +223,7 @@ async function employes(req, res) {
   doc.tableau({
     colonnes: [
       { titre: 'Matricule', cle: 'matricule', largeur: 1.1, uneLigne: true },
-      { titre: 'Nom et prenom', cle: 'nom_complet', largeur: 3, format: (_, l) => `${l.nom} ${l.prenom}` },
+      { titre: 'Nom et prenom', cle: 'nom_complet', largeur: 3, calcule: (l) => `${l.nom} ${l.prenom}` },
       { titre: 'Fonction', cle: 'fonction', largeur: 2.2, videPar: 'Non definie' },
       { titre: 'Telephone', cle: 'telephone', largeur: 1.8, uneLigne: true, videPar: '-' },
       { titre: 'Embauche', cle: 'date_embauche', largeur: 1.3, format: formatDateCourte, uneLigne: true },

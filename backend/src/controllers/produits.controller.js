@@ -3,18 +3,47 @@ const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
 const { finaliserFichier, nettoyerAnciennesVersions } = require('../middleware/upload.middleware');
 
+// Le rayon et la marque accompagnent toujours la fiche : l'ecran de vente les
+// affiche sur chaque carte, et les filtres s'en servent sans avoir a charger
+// deux listes de reference pour reconstituer un libelle.
+const SELECT_PRODUIT = `
+  SELECT p.*, c.nom AS categorie, m.nom AS marque
+    FROM produits p
+    LEFT JOIN categories c ON c.id = p.categorie_id
+    LEFT JOIN marques    m ON m.id = p.marque_id`;
+
 async function list(req, res) {
   const includeInactifs = req.query.includeInactifs === 'true';
+  const conditions = [];
+  const params = [];
+
+  if (!includeInactifs) conditions.push('p.actif = true');
+  if (req.query.categorie_id) {
+    params.push(req.query.categorie_id);
+    conditions.push(`p.categorie_id = $${params.length}`);
+  }
+  if (req.query.marque_id) {
+    params.push(req.query.marque_id);
+    conditions.push(`p.marque_id = $${params.length}`);
+  }
+  // La recherche porte aussi sur le rayon et la marque : on cherche autant
+  // "riz" que "Bijou", et l'un comme l'autre doit ramener la meme etagere.
+  if (req.query.recherche) {
+    params.push(`%${String(req.query.recherche).trim()}%`);
+    const i = params.length;
+    conditions.push(`(p.nom ILIKE $${i} OR c.nom ILIKE $${i} OR m.nom ILIKE $${i})`);
+  }
+
   const { rows } = await pool.query(
-    includeInactifs
-      ? 'SELECT * FROM produits ORDER BY nom'
-      : 'SELECT * FROM produits WHERE actif = true ORDER BY nom'
+    `${SELECT_PRODUIT} ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''}
+     ORDER BY p.nom`,
+    params
   );
   res.json(rows);
 }
 
 async function getById(req, res) {
-  const { rows } = await pool.query('SELECT * FROM produits WHERE id = $1', [req.params.id]);
+  const { rows } = await pool.query(`${SELECT_PRODUIT} WHERE p.id = $1`, [req.params.id]);
   if (rows.length === 0) return res.status(404).json({ message: 'Produit introuvable' });
   res.json(rows[0]);
 }
@@ -23,8 +52,8 @@ async function getById(req, res) {
 // une fiche complete transporte aussi un chemin de photo et des horodatages
 // techniques, qui n'apprennent rien a qui relit l'operation.
 const CHAMPS_AUDIT_PRODUIT = [
-  'nom', 'prix_vente', 'unite_stock', 'unite_achat', 'facteur_conversion',
-  'seuil_alerte', 'quantite_stock', 'cout_moyen_pondere', 'actif',
+  'nom', 'categorie', 'marque', 'prix_vente', 'unite_stock', 'unite_achat',
+  'facteur_conversion', 'seuil_alerte', 'quantite_stock', 'cout_moyen_pondere', 'actif',
 ];
 
 function etatProduitPourAudit(produit) {
@@ -45,6 +74,15 @@ function validerFacteurConversion(valeur) {
   return null;
 }
 
+// Une reference vide arrive du formulaire sous plusieurs formes selon le
+// navigateur et le composant : chaine vide, "null", ou rien du tout. Toutes
+// veulent dire "non classe", et doivent devenir NULL et non NaN.
+function referenceOuNull(valeur) {
+  if (valeur === undefined || valeur === null || valeur === '' || valeur === 'null') return null;
+  const nombre = Number(valeur);
+  return Number.isInteger(nombre) && nombre > 0 ? nombre : null;
+}
+
 async function create(req, res) {
   const { nom, prix_vente, unite_stock, unite_achat, facteur_conversion, seuil_alerte } = req.body;
   if (!nom || prix_vente === undefined || !unite_stock) {
@@ -56,12 +94,18 @@ async function create(req, res) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows } = await client.query(
-      `INSERT INTO produits (nom, prix_vente, unite_stock, unite_achat, facteur_conversion, seuil_alerte)
-       VALUES ($1, $2, $3, $4, COALESCE($5, 1), COALESCE($6, 0))
-       RETURNING *`,
-      [nom, prix_vente, unite_stock, unite_achat || null, facteur_conversion, seuil_alerte]
+    const { rows: creees } = await client.query(
+      `INSERT INTO produits (nom, prix_vente, unite_stock, unite_achat, facteur_conversion,
+                             seuil_alerte, categorie_id, marque_id)
+       VALUES ($1, $2, $3, $4, COALESCE($5, 1), COALESCE($6, 0), $7, $8)
+       RETURNING id`,
+      [nom, prix_vente, unite_stock, unite_achat || null, facteur_conversion, seuil_alerte,
+        referenceOuNull(req.body.categorie_id), referenceOuNull(req.body.marque_id)]
     );
+    // Relecture jointe : le journal d'audit et la reponse doivent porter les
+    // libelles du rayon et de la marque, pas leurs identifiants - une ligne
+    // d'historique disant « categorie : 7 » n'apprend rien a personne.
+    const { rows } = await client.query(`${SELECT_PRODUIT} WHERE p.id = $1`, [creees[0].id]);
     const produit = rows[0];
     await logAudit(client, {
       typeOperation: 'produit_creation',
@@ -90,7 +134,9 @@ async function update(req, res) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const { rows: existingRows } = await client.query('SELECT * FROM produits WHERE id = $1 FOR UPDATE', [id]);
+    const { rows: existingRows } = await client.query(
+      `${SELECT_PRODUIT} WHERE p.id = $1 FOR UPDATE OF p`, [id]
+    );
     if (existingRows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Produit introuvable' });
@@ -99,7 +145,15 @@ async function update(req, res) {
 
     const nouveauPrix = prix_vente !== undefined ? prix_vente : existing.prix_vente;
 
-    const { rows } = await client.query(
+    // Rayon et marque se distinguent des autres champs : ils doivent pouvoir
+    // etre RETIRES. Un COALESCE les rendrait indelebiles une fois poses, alors
+    // que « ce produit n'appartient finalement a aucun rayon » est une
+    // correction legitime. D'ou le test sur la presence de la cle dans le
+    // corps, et non sur la valeur.
+    const categorieFournie = req.body.categorie_id !== undefined;
+    const marqueFournie = req.body.marque_id !== undefined;
+
+    await client.query(
       `UPDATE produits SET
          nom = COALESCE($1, nom),
          prix_vente = $2,
@@ -107,11 +161,15 @@ async function update(req, res) {
          unite_achat = COALESCE($4, unite_achat),
          facteur_conversion = COALESCE($5, facteur_conversion),
          seuil_alerte = COALESCE($6, seuil_alerte),
+         categorie_id = CASE WHEN $8 THEN $9::int ELSE categorie_id END,
+         marque_id    = CASE WHEN $10 THEN $11::int ELSE marque_id END,
          updated_at = now()
-       WHERE id = $7
-       RETURNING *`,
-      [nom, nouveauPrix, unite_stock, unite_achat, facteur_conversion, seuil_alerte, id]
+       WHERE id = $7`,
+      [nom, nouveauPrix, unite_stock, unite_achat, facteur_conversion, seuil_alerte, id,
+        categorieFournie, referenceOuNull(req.body.categorie_id),
+        marqueFournie, referenceOuNull(req.body.marque_id)]
     );
+    const { rows } = await client.query(`${SELECT_PRODUIT} WHERE p.id = $1`, [id]);
     const produit = rows[0];
 
     // Regle stricte : tout changement de prix de vente est trace dans l'Historique.

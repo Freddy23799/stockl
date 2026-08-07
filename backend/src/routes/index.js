@@ -4,6 +4,8 @@ const router = express.Router();
 router.use('/auth', require('./auth.routes'));
 router.use('/utilisateurs', require('./utilisateurs.routes'));
 router.use('/produits', require('./produits.routes'));
+router.use('/categories', require('./referentiels.routes').categories);
+router.use('/marques', require('./referentiels.routes').marques);
 router.use('/fournisseurs', require('./fournisseurs.routes'));
 router.use('/vendeuses', require('./vendeuses.routes'));
 router.use('/employes', require('./employes.routes'));

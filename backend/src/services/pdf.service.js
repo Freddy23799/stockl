@@ -472,7 +472,9 @@ class DocumentRapport {
    * @param {Array}  options.colonnes  [{ titre, cle, largeur, alignement, format }]
    *   `largeur` est une part relative (les parts sont normalisees sur la largeur
    *   utile), `alignement` vaut 'left' | 'right' | 'center',
-   *   `format` est une fonction (valeur, ligne) => string.
+   *   `format` est une fonction (valeur, ligne) => string appliquee a la valeur
+   *   lue sous `cle`, `calcule` une fonction (ligne) => string pour une colonne
+   *   qui n'a pas de colonne correspondante dans la requete.
    * @param {Array}  options.lignes    donnees brutes
    * @param {Array}  [options.total]   ligne de total, meme forme qu'une ligne
    * @param {string} [options.vide]    message si aucune ligne
@@ -514,6 +516,19 @@ class DocumentRapport {
 
     const valeurCellule = (colonne, ligne) => {
       const brute = ligne[colonne.cle];
+
+      // Colonne calculee : sa valeur se deduit de la ligne entiere et non d'une
+      // colonne de la requete ("Nom et prenom" a partir de `nom` et `prenom`).
+      // Sa cle ne designe alors rien dans les lignes de donnees - elle ne sert
+      // qu'a viser la cellule depuis la ligne de total, qui elle la renseigne.
+      //
+      // Ce cas doit passer AVANT le test d'absence ci-dessous : sans cela une
+      // colonne calculee sortait systematiquement vide, et le registre du
+      // personnel s'imprimait sans aucun nom.
+      if (colonne.calcule) {
+        return nettoyer(brute !== undefined ? brute : colonne.calcule(ligne));
+      }
+
       // Une cellule vide reste vide : appliquer le format a une valeur absente
       // imprime "Invalid Date" ou "0 FCFA" dans les cases qu'une ligne de total
       // laisse volontairement blanches.

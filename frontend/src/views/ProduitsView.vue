@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
@@ -11,12 +11,40 @@ import ConfirmDialog from '../components/ui/ConfirmDialog.vue'
 import EmptyState from '../components/ui/EmptyState.vue'
 import TableSkeleton from '../components/ui/TableSkeleton.vue'
 import Icon from '../components/ui/Icon.vue'
+import ChoixPhoto from '../components/ui/ChoixPhoto.vue'
+import GestionReferentiel from '../components/ui/GestionReferentiel.vue'
 
 const toasts = useToastStore()
 
 const tousLesProduits = ref([])
 const loading = ref(true)
 const erreur = ref('')
+
+/* --- Rayons et marques ---------------------------------------------------- */
+
+// Un point de vente tient souvent le meme article sous plusieurs marques - du
+// riz Bijou, du riz Thailande, du riz Celeor. Ce sont trois fiches distinctes,
+// avec chacune leur prix et leur stock, mais un seul rayon. Les deux axes sont
+// separes parce qu'ils ne se recoupent pas : une marque se retrouve dans
+// plusieurs rayons, un rayon accueille plusieurs marques.
+const categories = ref([])
+const marques = ref([])
+const gestionOuverte = ref(null) // 'categories' | 'marques'
+const filtreCategorie = ref('')
+const filtreMarque = ref('')
+
+async function chargerReferentiels() {
+  try {
+    const [c, m] = await Promise.all([api.get('/categories'), api.get('/marques')])
+    categories.value = c.data
+    marques.value = m.data
+  } catch {
+    // Le catalogue reste utilisable sans ses references : les listes seront
+    // simplement vides, ce qui vaut mieux qu'un ecran en erreur.
+    categories.value = []
+    marques.value = []
+  }
+}
 
 const ongletActif = ref('actifs')
 const recherche = ref('')
@@ -48,9 +76,19 @@ const listeCourante = computed(() => {
 
 const produitsAffiches = computed(() => {
   const q = recherche.value.trim().toLowerCase()
-  const liste = q
-    ? listeCourante.value.filter((p) => p.nom.toLowerCase().includes(q))
+  // La recherche porte aussi sur le rayon et la marque : on cherche autant
+  // « riz » que « Bijou », et l'un comme l'autre doit ramener la meme etagere.
+  let liste = q
+    ? listeCourante.value.filter((p) => `${p.nom} ${p.categorie || ''} ${p.marque || ''}`
+      .toLowerCase().includes(q))
     : [...listeCourante.value]
+
+  if (filtreCategorie.value) {
+    liste = liste.filter((p) => String(p.categorie_id) === String(filtreCategorie.value))
+  }
+  if (filtreMarque.value) {
+    liste = liste.filter((p) => String(p.marque_id) === String(filtreMarque.value))
+  }
 
   const sens = triSens.value === 'asc' ? 1 : -1
   return liste.sort((a, b) => {
@@ -85,7 +123,7 @@ async function charger() {
   }
 }
 
-onMounted(charger)
+onMounted(() => { charger(); chargerReferentiels() })
 
 /* --- Creation / edition ------------------------------------------------- */
 
@@ -93,9 +131,18 @@ const formVisible = ref(false)
 const modeEdition = ref(false)
 const soumission = ref(false)
 const formErreur = ref('')
+const choixPhotoRef = ref(null)
+// Photo choisie dans le formulaire, envoyee apres l'enregistrement de la fiche.
+const photoDuForm = ref(null)
 const form = reactive({
-  id: null, nom: '', prix_vente: '', unite_stock: '', unite_achat: '', facteur_conversion: 1, seuil_alerte: 0,
+  id: null, nom: '', prix_vente: '', unite_stock: '', unite_achat: '',
+  facteur_conversion: 1, seuil_alerte: 0, categorie_id: '', marque_id: '', photo: '',
 })
+
+const VIDE = {
+  id: null, nom: '', prix_vente: '', unite_stock: '', unite_achat: '',
+  facteur_conversion: 1, seuil_alerte: 0, categorie_id: '', marque_id: '', photo: '',
+}
 
 // Montre concretement ce que le facteur de conversion signifie, la ou c'est
 // le reglage le plus mal compris de la fiche produit.
@@ -108,7 +155,9 @@ const apercuConversion = computed(() => {
 function ouvrirCreation() {
   modeEdition.value = false
   formErreur.value = ''
-  Object.assign(form, { id: null, nom: '', prix_vente: '', unite_stock: '', unite_achat: '', facteur_conversion: 1, seuil_alerte: 0 })
+  Object.assign(form, VIDE)
+  photoDuForm.value = null
+  choixPhotoRef.value?.reinitialiser()
   formVisible.value = true
 }
 
@@ -117,9 +166,38 @@ function ouvrirEdition(p) {
   formErreur.value = ''
   Object.assign(form, {
     id: p.id, nom: p.nom, prix_vente: p.prix_vente, unite_stock: p.unite_stock,
-    unite_achat: p.unite_achat || '', facteur_conversion: p.facteur_conversion, seuil_alerte: p.seuil_alerte,
+    unite_achat: p.unite_achat || '', facteur_conversion: p.facteur_conversion,
+    seuil_alerte: p.seuil_alerte, photo: p.photo || '',
+    categorie_id: p.categorie_id ?? '', marque_id: p.marque_id ?? '',
   })
+  photoDuForm.value = null
+  choixPhotoRef.value?.reinitialiser()
   formVisible.value = true
+}
+
+/**
+ * Envoie la photo choisie dans le formulaire.
+ *
+ * Volontairement separe de l'enregistrement de la fiche, et volontairement non
+ * bloquant : la photo est un complement. Si son envoi echoue - fichier trop
+ * lourd, reseau coupe - le produit reste cree et correctement renseigne, et on
+ * le signale sans faire croire que tout est perdu.
+ */
+async function envoyerPhotoDuForm(produitId) {
+  if (!photoDuForm.value) return
+  const donnees = new FormData()
+  // Champ 'photo' : c'est le nom attendu par uploadProduitPhoto.single('photo').
+  donnees.append('photo', photoDuForm.value, photoDuForm.value.name)
+  try {
+    await api.post(`/produits/${produitId}/photo`, donnees, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  } catch (err) {
+    toasts.erreur(
+      err.response?.data?.message
+      || "La fiche est enregistrée, mais la photo n'a pas pu être envoyée."
+    )
+  }
 }
 
 async function soumettreForm() {
@@ -133,14 +211,19 @@ async function soumettreForm() {
       unite_achat: form.unite_achat.trim() || null,
       facteur_conversion: Number(form.facteur_conversion) || 1,
       seuil_alerte: Number(form.seuil_alerte) || 0,
+      categorie_id: form.categorie_id || null,
+      marque_id: form.marque_id || null,
     }
+    let produitId = form.id
     if (modeEdition.value) {
       await api.put(`/produits/${form.id}`, payload)
       toasts.succes(`"${payload.nom}" mis a jour`)
     } else {
-      await api.post('/produits', payload)
+      const { data } = await api.post('/produits', payload)
+      produitId = data.id
       toasts.succes(`"${payload.nom}" ajoute au catalogue`)
     }
+    await envoyerPhotoDuForm(produitId)
     formVisible.value = false
     await charger()
   } catch (err) {
@@ -193,199 +276,30 @@ async function ouvrirHistorique(p) {
    Deux sources : un fichier deja sur l'appareil, ou une prise de vue directe.
    Dans les deux cas l'image est reduite avant l'envoi. */
 
+// Remplacement rapide de la photo depuis la liste. Toute la mecanique de prise
+// de vue vit maintenant dans ChoixPhoto : ici il ne reste que l'envoi.
 const photoVisible = ref(false)
 const photoProduit = ref(null)
 const photoFichier = ref(null)
-const photoApercu = ref('')
 const photoEnvoi = ref(false)
 const photoErreur = ref('')
-// 'choix' : on choisit la source · 'camera' : flux en direct · 'apercu' : image prete
-const photoMode = ref('choix')
-const photoOrigine = ref('fichier')
-const photoPreparation = ref(false)
-const videoRef = ref(null)
 
-// getUserMedia n'existe qu'en contexte securise (HTTPS ou localhost). Sur une
-// origine en clair l'objet est absent : plutot que de proposer un bouton qui
-// echouera, on se rabat sur l'appareil photo natif via `capture`.
-const cameraDisponible =
-  typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
-
-let flux = null
-
-function arreterFlux() {
-  if (flux) {
-    // stop() explicite sur chaque piste : sans cela le voyant de la camera
-    // reste allume et la batterie se vide, la liberation automatique
-    // n'intervient pas a la fermeture de la modale.
-    flux.getTracks().forEach((piste) => piste.stop())
-    flux = null
-  }
-  if (videoRef.value) videoRef.value.srcObject = null
-}
-
-function libererApercu() {
-  if (photoApercu.value) URL.revokeObjectURL(photoApercu.value)
-  photoApercu.value = ''
-}
-
-const COTE_MAX = 1280
-
-// Une photo de telephone fait couramment 4 000 px de large et depasse les 5 Mo
-// acceptes par le serveur. On ramene le plus grand cote a 1280 px en gardant le
-// ratio : largement assez pour une fiche produit, et l'envoi passe.
-function reduireEnJpeg(source, largeurSource, hauteurSource) {
-  const ratio = Math.min(1, COTE_MAX / Math.max(largeurSource, hauteurSource))
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.round(largeurSource * ratio))
-  canvas.height = Math.max(1, Math.round(hauteurSource * ratio))
-  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height)
-  return new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85))
-}
-
-function poserPhoto(blob) {
-  libererApercu()
-  // Le serveur valide le format sur l'EXTENSION du nom recu (voir
-  // upload.middleware.js) : un Blob anonyme arriverait sans extension et serait
-  // refuse. D'ou le nom explicite en .jpg.
-  photoFichier.value = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
-  photoApercu.value = URL.createObjectURL(blob)
-  photoMode.value = 'apercu'
-}
-
-function chargerImage(url) {
-  return new Promise((resolve, reject) => {
-    const image = new Image()
-    image.onload = () => resolve(image)
-    image.onerror = () => reject(new Error('Image illisible'))
-    image.src = url
-  })
-}
-
-async function surChoixFichier(e) {
-  const fichier = e.target.files[0] || null
-  // Le champ est vide immediatement : sans cela, reprendre le MEME fichier
-  // apres un « Reprendre » ne declencherait aucun evenement change.
-  e.target.value = ''
-  if (!fichier) return
-
-  photoErreur.value = ''
-  photoOrigine.value = 'fichier'
-  photoPreparation.value = true
-  const url = URL.createObjectURL(fichier)
-  try {
-    const image = await chargerImage(url)
-    const blob = await reduireEnJpeg(image, image.naturalWidth, image.naturalHeight)
-    if (!blob) throw new Error('Encodage impossible')
-    poserPhoto(blob)
-  } catch {
-    // La reduction a echoue : on envoie le fichier d'origine tel quel. Un refus
-    // explicite du serveur vaut mieux qu'un bouton qui ne fait rien.
-    libererApercu()
-    photoFichier.value = fichier
-    photoApercu.value = URL.createObjectURL(fichier)
-    photoMode.value = 'apercu'
-  } finally {
-    URL.revokeObjectURL(url)
-    photoPreparation.value = false
-  }
-}
-
-function messageErreurCamera(err) {
-  if (err?.name === 'NotAllowedError' || err?.name === 'SecurityError') {
-    return 'Acces a la camera refuse. Autorisez la camera pour ce site dans les reglages du navigateur.'
-  }
-  if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
-    return 'Aucune camera detectee sur cet appareil.'
-  }
-  if (err?.name === 'NotReadableError') {
-    return 'La camera est deja utilisee par une autre application.'
-  }
-  if (err?.name === 'OverconstrainedError') {
-    return 'Aucune camera ne correspond aux reglages demandes.'
-  }
-  return 'La camera n\'a pas pu etre ouverte.'
-}
-
-async function ouvrirCamera() {
-  photoErreur.value = ''
-  photoOrigine.value = 'camera'
-  photoMode.value = 'camera'
-  // Le <video> n'existe qu'apres le rendu du mode camera : sans ce nextTick,
-  // srcObject serait pose sur null.
-  await nextTick()
-  try {
-    flux = await navigator.mediaDevices.getUserMedia({
-      // Camera arriere : on photographie un flacon pose devant soi, pas soi.
-      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } },
-      audio: false,
-    })
-    if (!videoRef.value) {
-      // La modale a ete refermee pendant que l'utilisateur repondait a la
-      // demande d'autorisation : le flux ouvert doit etre relache tout de suite.
-      arreterFlux()
-      return
-    }
-    videoRef.value.muted = true
-    videoRef.value.srcObject = flux
-  } catch (err) {
-    arreterFlux()
-    photoMode.value = 'choix'
-    photoErreur.value = messageErreurCamera(err)
-  }
-}
-
-function annulerCamera() {
-  arreterFlux()
-  photoMode.value = 'choix'
-}
-
-async function capturer() {
-  const video = videoRef.value
-  if (!video || !video.videoWidth) return
-  photoPreparation.value = true
-  try {
-    const blob = await reduireEnJpeg(video, video.videoWidth, video.videoHeight)
-    if (blob) poserPhoto(blob)
-    else photoErreur.value = 'La capture n\'a pas pu etre encodee.'
-  } finally {
-    photoPreparation.value = false
-    // Le cliche est pris : la camera n'a plus aucune raison de rester allumee.
-    arreterFlux()
-  }
-}
-
-function reprendre() {
-  libererApercu()
-  photoFichier.value = null
-  if (photoOrigine.value === 'camera' && cameraDisponible) ouvrirCamera()
-  else photoMode.value = 'choix'
-}
+// La prise de vue, la reduction et l'apercu vivent dans ChoixPhoto : cette vue
+// ne garde que ce qui la concerne, l'envoi au serveur.
 
 function ouvrirPhoto(p) {
   photoProduit.value = p
   photoFichier.value = null
-  libererApercu()
   photoErreur.value = ''
-  photoMode.value = 'choix'
-  photoOrigine.value = 'fichier'
   photoVisible.value = true
 }
 
 function fermerPhoto() {
-  arreterFlux()
-  libererApercu()
+  // ChoixPhoto est demonte avec la modale : il relache lui-meme le flux camera
+  // et l'URL d'apercu dans son onUnmounted.
   photoFichier.value = null
-  photoMode.value = 'choix'
   photoVisible.value = false
 }
-
-// Filet de securite : une navigation vers une autre page demonte la vue sans
-// passer par le bouton Annuler.
-onUnmounted(() => {
-  arreterFlux()
-  libererApercu()
-})
 
 async function envoyerPhoto() {
   if (!photoFichier.value) return
@@ -587,6 +501,53 @@ async function envoyerPhoto() {
           <input v-model="form.nom" placeholder="Eau de parfum Rose 50 mL" required />
         </div>
 
+        <!-- Rayon et marque : deux axes separes. Le meme article se tient
+             souvent sous plusieurs marques, et une marque se retrouve dans
+             plusieurs rayons - les melanger obligerait a creer « Riz Bijou »
+             puis « Huile Bijou », c'est-a-dire a refaire a la main le produit
+             des deux listes. -->
+        <div class="field-row">
+          <div class="field">
+            <label>
+              Rayon <span class="muted">(optionnel)</span>
+              <button type="button" class="lien-gerer" @click="gestionOuverte = 'categories'">
+                <Icon name="settings" :size="12" /> gérer
+              </button>
+            </label>
+            <select v-model="form.categorie_id">
+              <option value="">Non classé</option>
+              <option v-for="c in categories" :key="c.id" :value="c.id">{{ c.nom }}</option>
+            </select>
+            <span class="field-hint">Regroupe les articles d'une même famille</span>
+          </div>
+          <div class="field">
+            <label>
+              Marque <span class="muted">(optionnel)</span>
+              <button type="button" class="lien-gerer" @click="gestionOuverte = 'marques'">
+                <Icon name="settings" :size="12" /> gérer
+              </button>
+            </label>
+            <select v-model="form.marque_id">
+              <option value="">Sans marque</option>
+              <option v-for="m in marques" :key="m.id" :value="m.id">{{ m.nom }}</option>
+            </select>
+            <span class="field-hint">Bijou, Thaïlande, Céleor...</span>
+          </div>
+        </div>
+
+        <!-- La photo se pose ici, et non dans une fenetre separee ouverte
+             depuis la liste : elle appartient a la fiche, pas a une etape
+             supplementaire une fois la fiche creee. -->
+        <div class="field">
+          <label>Photo <span class="muted">(optionnel)</span></label>
+          <ChoixPhoto
+            ref="choixPhotoRef"
+            compact
+            :apercu-actuel="form.photo ? assetUrl(form.photo, { taille: 'moyen' }) : ''"
+            @choisie="photoDuForm = $event"
+          />
+        </div>
+
         <div class="field-row">
           <div class="field">
             <label>Prix de vente</label>
@@ -668,82 +629,52 @@ async function envoyerPhoto() {
     </Modal>
 
     <!-- Photo -->
+    <!-- Remplacement rapide depuis la liste, sans rouvrir toute la fiche. -->
     <Modal v-if="photoVisible" :title="`Photo — ${photoProduit?.nom}`" @close="fermerPhoto">
-      <form id="form-photo" @submit.prevent="envoyerPhoto">
-        <!-- Choix de la source -->
-        <template v-if="photoMode === 'choix'">
-          <div class="row" style="gap: 14px; align-items: flex-start">
-            <img v-if="photoProduit?.photo" :src="assetUrl(photoProduit.photo, { taille: 'moyen' })" class="thumb thumb-lg" alt="" />
-            <div v-else class="thumb thumb-lg"><Icon name="image" :size="20" /></div>
-            <p class="flex-1 small muted">
-              L'image est reduite a 1280 px avant l'envoi : une photo prise au telephone
-              depasserait sinon la limite de 5 Mo du serveur.
-            </p>
-          </div>
-
-          <div class="photo-sources">
-            <label class="photo-source">
-              <Icon name="download" :size="19" />
-              <span class="photo-source-titre">Importer un fichier</span>
-              <span class="photo-source-desc">JPG, PNG ou WebP</span>
-              <input type="file" accept="image/png,image/jpeg,image/webp" @change="surChoixFichier" />
-            </label>
-
-            <button v-if="cameraDisponible" type="button" class="photo-source" @click="ouvrirCamera">
-              <Icon name="image" :size="19" />
-              <span class="photo-source-titre">Prendre une photo</span>
-              <span class="photo-source-desc">Camera arriere</span>
-            </button>
-            <!-- Pas de getUserMedia (origine non securisee, navigateur ancien) :
-                 `capture` ouvre quand meme l'appareil photo natif sur mobile. -->
-            <label v-else class="photo-source">
-              <Icon name="image" :size="19" />
-              <span class="photo-source-titre">Prendre une photo</span>
-              <span class="photo-source-desc">Appareil photo de l'appareil</span>
-              <input type="file" accept="image/*" capture="environment" @change="surChoixFichier" />
-            </label>
-          </div>
-
-          <p v-if="photoPreparation" class="field-hint row"><span class="spinner" /> Preparation de l'image...</p>
-        </template>
-
-        <!-- Prise de vue -->
-        <template v-else-if="photoMode === 'camera'">
-          <div class="photo-cadre">
-            <video ref="videoRef" autoplay playsinline muted></video>
-          </div>
-          <div class="row" style="gap: 8px">
-            <button type="button" class="flex-1" @click="annulerCamera">Annuler</button>
-            <button type="button" class="primary flex-1" :disabled="photoPreparation" @click="capturer">
-              <span v-if="photoPreparation" class="spinner" />
-              <Icon v-else name="check" :size="15" />
-              Capturer
-            </button>
-          </div>
-        </template>
-
-        <!-- Apercu avant envoi -->
-        <template v-else>
-          <div class="photo-cadre">
-            <img :src="photoApercu" alt="Apercu de la photo a envoyer" />
-          </div>
-          <button type="button" class="btn-block" @click="reprendre">
-            <Icon name="refresh" :size="15" /> Reprendre la photo
-          </button>
-        </template>
-
-        <p v-if="photoErreur" class="alert alert-danger">
-          <Icon name="alert" :size="16" /><span>{{ photoErreur }}</span>
-        </p>
-      </form>
+      <ChoixPhoto
+        :apercu-actuel="photoProduit?.photo ? assetUrl(photoProduit.photo, { taille: 'moyen' }) : ''"
+        @choisie="photoFichier = $event"
+      />
+      <p v-if="photoErreur" class="alert alert-danger">
+        <Icon name="alert" :size="16" /><span>{{ photoErreur }}</span>
+      </p>
       <template #footer>
         <button type="button" @click="fermerPhoto">Annuler</button>
-        <button type="submit" form="form-photo" class="primary" :disabled="!photoFichier || photoEnvoi">
+        <button type="button" class="primary" :disabled="!photoFichier || photoEnvoi" @click="envoyerPhoto">
           <span v-if="photoEnvoi" class="spinner" />
           Envoyer
         </button>
       </template>
     </Modal>
+
+    <GestionReferentiel
+      v-if="gestionOuverte === 'categories'"
+      titre="Rayons du catalogue"
+      ressource="categories"
+      libelle="rayon"
+      exemple="Riz, huile, parfums..."
+      icone="package"
+      explication="Les rayons regroupent les articles d'une même famille. Ils servent aux filtres,
+                   à la recherche et aux statistiques par rayon. Un rayon qui contient déjà des
+                   produits ne peut pas être supprimé : désactivez-le pour le retirer des choix
+                   sans déclasser les fiches existantes."
+      @close="gestionOuverte = null"
+      @change="chargerReferentiels(); charger()"
+    />
+
+    <GestionReferentiel
+      v-if="gestionOuverte === 'marques'"
+      titre="Marques"
+      ressource="marques"
+      libelle="marque"
+      exemple="Bijou, Thaïlande, Céleor..."
+      icone="tag"
+      explication="La marque distingue deux articles du même rayon : du riz Bijou et du riz
+                   Thaïlande sont deux fiches, deux prix et deux stocks, mais un seul rayon.
+                   Une marque déjà portée par des produits ne peut pas être supprimée."
+      @close="gestionOuverte = null"
+      @change="chargerReferentiels(); charger()"
+    />
 
     <ConfirmDialog
       v-if="aDesactiver"
