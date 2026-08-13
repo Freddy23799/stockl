@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import { useModulesStore } from '../stores/modules'
 import { useAuthStore } from '../stores/auth'
@@ -369,7 +369,7 @@ async function changerMotDePasse() {
 /* --- Comptes ------------------------------------------------------------ */
 
 const compteVisible = ref(false)
-const compteForm = reactive({ prenom: '', nom: '' })
+const compteForm = reactive({ prenom: '', nom: '', role: 'admin', employe_id: '' })
 const compteErreur = ref('')
 const compteSoumission = ref(false)
 // Identifiant + mot de passe generes, montres UNE SEULE FOIS apres creation.
@@ -377,12 +377,40 @@ const compteSoumission = ref(false)
 // ferme, il est definitivement irrecuperable.
 const compteCree = ref(null)
 
+const ROLES_COMPTE = [
+  { value: 'admin', label: 'Administrateur' },
+  { value: 'vendeuse', label: 'Vendeuse' },
+  { value: 'comptabilite', label: 'Comptabilite' },
+  { value: 'gestionnaire_stock', label: 'Gestionnaire de stock' },
+]
+const LABEL_ROLE = Object.fromEntries(ROLES_COMPTE.map((r) => [r.value, r.label]))
+
+// Chargee seulement quand necessaire : un role Vendeuse doit etre rattache a
+// un employe existant (voir vendeuses.controller.js, meme logique cote code
+// a 6 chiffres). Les autres roles n'en ont pas besoin.
+const employesActifs = ref([])
+const employesCharges = ref(false)
+async function chargerEmployesActifs() {
+  if (employesCharges.value) return
+  try {
+    const { data } = await api.get('/employes')
+    employesActifs.value = (Array.isArray(data) ? data : data.data || []).filter((e) => e.actif)
+    employesCharges.value = true
+  } catch {
+    employesActifs.value = []
+  }
+}
+
 function ouvrirCompte() {
-  Object.assign(compteForm, { prenom: '', nom: '' })
+  Object.assign(compteForm, { prenom: '', nom: '', role: 'admin', employe_id: '' })
   compteErreur.value = ''
   compteCree.value = null
   compteVisible.value = true
 }
+
+watch(() => compteForm.role, (role) => {
+  if (role === 'vendeuse') chargerEmployesActifs()
+})
 
 async function creerCompte() {
   compteSoumission.value = true
@@ -393,6 +421,7 @@ async function creerCompte() {
       nom_utilisateur: data.nom_utilisateur,
       mot_de_passe: data.mot_de_passe_initial,
       personne: `${data.prenom} ${data.nom}`,
+      vendeuse_code: data.vendeuse_code || null,
     }
     await charger()
   } catch (err) {
@@ -909,10 +938,10 @@ async function copier(texte, libelle) {
       <div v-show="ongletActif === 'comptes'" class="card">
         <div class="card-head">
           <div class="card-head-text">
-            <h2>Comptes administrateurs</h2>
+            <h2>Comptes de la plateforme</h2>
             <p class="card-head-sub">
-              Seuls les administrateurs se connectent. Les vendeuses sont identifiees par leur code a
-              6 chiffres, sans compte.
+              Chaque compte a un role aux droits limites a son perimetre. Une vendeuse garde aussi
+              son code a 6 chiffres pour la caisse, avec ou sans compte de connexion.
             </p>
           </div>
           <button type="button" class="primary" @click="ouvrirCompte">
@@ -928,6 +957,7 @@ async function copier(texte, libelle) {
                 <tr>
                   <th>Personne</th>
                   <th>Identifiant</th>
+                  <th>Role</th>
                   <th>Statut</th>
                   <th class="td-num hide-sm">Cree le</th>
                   <th class="td-actions"></th>
@@ -944,7 +974,11 @@ async function copier(texte, libelle) {
                       </span>
                     </div>
                   </td>
-                  <td data-label="Identifiant"><code class="strong">{{ u.nom_utilisateur }}</code></td>
+                  <td data-label="Identifiant">
+                    <code class="strong">{{ u.nom_utilisateur }}</code>
+                    <span v-if="u.vendeuse_code" class="small muted nowrap">Code caisse : {{ u.vendeuse_code }}</span>
+                  </td>
+                  <td data-label="Role"><span class="badge">{{ LABEL_ROLE[u.role] || u.role }}</span></td>
                   <td data-label="Statut">
                     <span class="badge" :class="u.actif ? 'success' : 'danger'">
                       <span class="badge-dot" />{{ u.actif ? 'Actif' : 'Desactive' }}
@@ -1056,7 +1090,7 @@ async function copier(texte, libelle) {
     </Modal>
 
     <!-- ============ Modale nouveau compte ============ -->
-    <Modal v-if="compteVisible" title="Nouveau compte administrateur" @close="fermerCompte">
+    <Modal v-if="compteVisible" title="Nouveau compte" @close="fermerCompte">
       <form v-if="!compteCree" id="form-compte" @submit.prevent="creerCompte">
         <div class="field-row">
           <div class="field">
@@ -1067,6 +1101,27 @@ async function copier(texte, libelle) {
             <label>Nom</label>
             <input v-model="compteForm.nom" required />
           </div>
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <select v-model="compteForm.role">
+            <option v-for="r in ROLES_COMPTE" :key="r.value" :value="r.value">{{ r.label }}</option>
+          </select>
+          <span class="field-hint">
+            Determine les operations accessibles depuis ce compte. L'administrateur voit et fait
+            tout ; les autres roles sont limites a leur perimetre.
+          </span>
+        </div>
+        <div v-if="compteForm.role === 'vendeuse'" class="field">
+          <label>Employe rattache</label>
+          <select v-model="compteForm.employe_id" required>
+            <option value="" disabled>Choisir un employe</option>
+            <option v-for="e in employesActifs" :key="e.id" :value="e.id">{{ e.prenom }} {{ e.nom }}</option>
+          </select>
+          <span class="field-hint">
+            Cree ou relie la fiche vendeuse (code a 6 chiffres) de cet employe : le login et le code
+            caisse designent la meme personne.
+          </span>
         </div>
         <p class="alert alert-info">
           <Icon name="info" :size="16" />
@@ -1101,6 +1156,15 @@ async function copier(texte, libelle) {
             <div class="row" style="gap: 8px">
               <code class="identifiant-valeur">{{ compteCree.mot_de_passe }}</code>
               <button type="button" class="btn-sm btn-ghost" title="Copier" @click="copier(compteCree.mot_de_passe, 'Mot de passe')">
+                <Icon name="copy" :size="15" />
+              </button>
+            </div>
+          </div>
+          <div v-if="compteCree.vendeuse_code" class="identifiant-ligne">
+            <span class="small muted">Code caisse</span>
+            <div class="row" style="gap: 8px">
+              <code class="identifiant-valeur">{{ compteCree.vendeuse_code }}</code>
+              <button type="button" class="btn-sm btn-ghost" title="Copier" @click="copier(compteCree.vendeuse_code, 'Code caisse')">
                 <Icon name="copy" :size="15" />
               </button>
             </div>

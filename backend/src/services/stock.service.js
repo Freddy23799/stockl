@@ -36,6 +36,27 @@ async function getMethodeValorisation(client) {
   return rows[0].methode_valorisation;
 }
 
+// Notification de stock bas, sur FRANCHISSEMENT du seuil uniquement (passage
+// au-dessus -> en dessous). Un produit deja en alerte qui perd encore une
+// unite ne doit pas reproduire une notification a chaque mouvement, sinon la
+// cloche se remplit de doublons sans information nouvelle.
+async function verifierAlerteStock(client, avant, apres) {
+  const etaitEnAlerte = Number(avant.quantite_stock) <= Number(avant.seuil_alerte);
+  const estEnAlerte = Number(apres.quantite_stock) <= Number(apres.seuil_alerte);
+  if (!estEnAlerte || etaitEnAlerte) return;
+
+  await client.query(
+    `INSERT INTO notifications (type, produit_id, titre, message)
+     VALUES ('stock_bas', $1, $2, $3)`,
+    [
+      apres.id,
+      `Stock bas : ${apres.nom}`,
+      `${apres.nom} est passe sous son seuil d'alerte `
+        + `(${apres.quantite_stock} ${apres.unite_stock} restant, seuil ${apres.seuil_alerte}).`,
+    ]
+  );
+}
+
 /**
  * Entree de stock (ravitaillement). Le prix est saisi dans l'unite d'achat choisie ;
  * cette fonction convertit et stocke automatiquement le cout par unite de reference.
@@ -99,6 +120,8 @@ async function entreeStock(client, { produitId, quantiteAchat, coutAchatTotal, a
      VALUES ($1, 'entree', $2, $3, $4, $5, 'ravitaillement') RETURNING *`,
     [produitId, quantiteRef, coutUnitaireRef, auteurId, fournisseurId]
   );
+
+  await verifierAlerteStock(client, produit, updatedRows[0]);
 
   await logAudit(client, {
     typeOperation: 'entree_stock',
@@ -173,6 +196,8 @@ async function sortieStockPourVente(client, { produitId, quantite, venteId, aute
      VALUES ($1, 'sortie', $2, $3, $4, $5, 'vente')`,
     [produitId, quantiteDemandee, coutUnitaireApplique, venteId, auteurId]
   );
+
+  await verifierAlerteStock(client, produit, { ...produit, quantite_stock: stockDisponible - quantiteDemandee });
 
   return { coutUnitaireApplique };
 }
@@ -274,6 +299,8 @@ async function ajusterStock(client, { produitId, quantiteReelle, motif, note = n
      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
     [produitId, ecart > 0 ? 'entree' : 'sortie', Math.abs(ecart), coutUnitaire, auteurId, motif, note]
   );
+
+  await verifierAlerteStock(client, produit, majRows[0]);
 
   await logAudit(client, {
     typeOperation: 'ajustement_stock',

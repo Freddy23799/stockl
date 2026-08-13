@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import { useModulesStore } from '../stores/modules'
 import { useToastStore } from '../stores/toasts'
+import { useAuthStore } from '../stores/auth'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
 import BoutonExport from '../components/ui/BoutonExport.vue'
@@ -15,6 +16,7 @@ import Icon from '../components/ui/Icon.vue'
 
 const modules = useModulesStore()
 const toasts = useToastStore()
+const auth = useAuthStore()
 
 const etatStock = ref([])
 const produits = ref([])
@@ -33,9 +35,14 @@ const valeurTotale = computed(() =>
 )
 const ruptures = computed(() => etatStock.value.filter((p) => Number(p.quantite_stock) <= 0))
 
+// Les mouvements et les entrees/ajustements sont reserves a l'admin et au
+// gestionnaire de stock (voir routes/stock.routes.js) : le reste des roles
+// n'a qu'une lecture de l'etat du stock.
+const peutGererStock = computed(() => auth.hasRole('gestionnaire_stock'))
+
 const onglets = computed(() => [
   { id: 'etat', label: 'Etat du stock', icon: 'layers', count: etatStock.value.length },
-  { id: 'mouvements', label: 'Mouvements', icon: 'history', count: total.value },
+  ...(peutGererStock.value ? [{ id: 'mouvements', label: 'Mouvements', icon: 'history', count: total.value }] : []),
 ])
 
 const etatFiltre = computed(() => {
@@ -119,7 +126,7 @@ function changerPage(nouvellePage) {
 
 async function chargerReferences() {
   const appels = [api.get('/produits')]
-  if (modules.fournisseurs) appels.push(api.get('/fournisseurs'))
+  if (modules.fournisseurs && peutGererStock.value) appels.push(api.get('/fournisseurs'))
   const [produitsRes, fournisseursRes] = await Promise.all(appels)
   produits.value = produitsRes.data
   fournisseurs.value = fournisseursRes ? fournisseursRes.data : []
@@ -129,7 +136,9 @@ onMounted(async () => {
   loading.value = true
   erreur.value = ''
   try {
-    await Promise.all([chargerEtat(), chargerMouvements(), chargerReferences()])
+    const appels = [chargerEtat(), chargerReferences()]
+    if (peutGererStock.value) appels.push(chargerMouvements())
+    await Promise.all(appels)
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
   } finally {
@@ -287,12 +296,14 @@ async function soumettreEntree() {
           libelle="Mouvements de stock"
           fichier="mouvements-de-stock"
         />
-        <button type="button" @click="ouvrirAjustement()">
-          <Icon name="clipboard" :size="15" /> Ajuster / Inventaire
-        </button>
-        <button type="button" class="primary" @click="ouvrirEntree()">
-          <Icon name="boxIn" :size="15" /> Entree de stock
-        </button>
+        <template v-if="peutGererStock">
+          <button type="button" @click="ouvrirAjustement()">
+            <Icon name="clipboard" :size="15" /> Ajuster / Inventaire
+          </button>
+          <button type="button" class="primary" @click="ouvrirEntree()">
+            <Icon name="boxIn" :size="15" /> Entree de stock
+          </button>
+        </template>
       </template>
     </PageHeader>
 
@@ -398,7 +409,7 @@ async function soumettreEntree() {
                   {{ formatMontant(Number(p.quantite_stock) * Number(p.cout_moyen_pondere)) }}
                 </td>
                 <td data-label="" class="td-actions">
-                  <button type="button" class="btn-sm" @click="ouvrirEntree(p.id)">
+                  <button v-if="peutGererStock" type="button" class="btn-sm" @click="ouvrirEntree(p.id)">
                     <Icon name="plus" :size="14" /> Reapprovisionner
                   </button>
                 </td>

@@ -6,6 +6,7 @@ const { uploadEmployePhoto, uploadDocumentFichiers, gererErreursUpload } = requi
 const employes = require('../controllers/employes.controller');
 const documents = require('../controllers/documents.controller');
 const fonctions = require('../controllers/fonctions.controller');
+const stagiaires = require('../controllers/stagiaires.controller');
 
 router.use(requireAuth, requireRole('admin'), requireModule('employes'));
 
@@ -35,6 +36,13 @@ router.post('/:id/documents/:documentId/fichiers', uploadDocumentFichiers, docum
 router.put('/:id/documents/:documentId', documents.modifier);
 router.delete('/:id/documents/:documentId/fichiers/:fichierId', documents.supprimerFichier);
 router.delete('/:id/documents/:documentId', documents.supprimer);
+
+// Badge et attestation de stage. Rattaches au module "Badges" (memes cartes
+// professionnelles que /exports/badges.pdf) plutot qu'a un nouveau toggle.
+router.post('/:id/stagiaire/badge', requireModule('badges'), stagiaires.genererBadge);
+router.post('/:id/stagiaire/attestation', requireModule('badges'), stagiaires.genererAttestation);
+router.get('/:id/stagiaire/documents', stagiaires.listerDocuments);
+router.get('/:id/stagiaire/documents/:documentId/pdf', stagiaires.telechargerDocument);
 
 router.use(gererErreursUpload);
 

@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
+import { useAuthStore } from '../stores/auth'
 import { formatMontant, formatQuantite, formatDate } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
 import BoutonExport from '../components/ui/BoutonExport.vue'
@@ -15,6 +16,12 @@ import ChoixPhoto from '../components/ui/ChoixPhoto.vue'
 import GestionReferentiel from '../components/ui/GestionReferentiel.vue'
 
 const toasts = useToastStore()
+const auth = useAuthStore()
+
+// Creer/modifier/archiver un produit, ou gerer les rayons/marques, est
+// reserve a l'admin et au gestionnaire de stock (voir routes/produits.routes.js
+// et routes/referentiels.routes.js) : les autres roles n'ont qu'une lecture.
+const peutGererCatalogue = computed(() => auth.hasRole('gestionnaire_stock'))
 
 const tousLesProduits = ref([])
 const loading = ref(true)
@@ -332,7 +339,7 @@ async function envoyerPhoto() {
           libelle="Catalogue des produits"
           fichier="catalogue-produits"
         />
-        <button type="button" class="primary" @click="ouvrirCreation">
+        <button v-if="peutGererCatalogue" type="button" class="primary" @click="ouvrirCreation">
           <Icon name="plus" :size="15" /> Nouveau produit
         </button>
       </template>
@@ -398,7 +405,7 @@ async function envoyerPhoto() {
           title="Aucun produit"
           desc="Commencez par creer vos produits : tout le reste du systeme en depend."
         >
-          <button type="button" class="primary" @click="ouvrirCreation">
+          <button v-if="peutGererCatalogue" type="button" class="primary" @click="ouvrirCreation">
             <Icon name="plus" :size="15" /> Creer le premier produit
           </button>
         </EmptyState>
@@ -468,17 +475,19 @@ async function envoyerPhoto() {
                   <template v-else>Vendu a l'unite</template>
                 </td>
                 <td data-label="" class="td-actions">
-                  <button type="button" class="btn-sm btn-ghost" title="Modifier" @click="ouvrirEdition(p)">
-                    <Icon name="edit" :size="15" />
-                  </button>
-                  <button type="button" class="btn-sm btn-ghost" title="Photo" @click="ouvrirPhoto(p)">
-                    <Icon name="image" :size="15" />
-                  </button>
+                  <template v-if="peutGererCatalogue">
+                    <button type="button" class="btn-sm btn-ghost" title="Modifier" @click="ouvrirEdition(p)">
+                      <Icon name="edit" :size="15" />
+                    </button>
+                    <button type="button" class="btn-sm btn-ghost" title="Photo" @click="ouvrirPhoto(p)">
+                      <Icon name="image" :size="15" />
+                    </button>
+                  </template>
                   <button type="button" class="btn-sm btn-ghost" title="Historique des prix" @click="ouvrirHistorique(p)">
                     <Icon name="history" :size="15" />
                   </button>
                   <button
-                    v-if="p.actif"
+                    v-if="p.actif && peutGererCatalogue"
                     type="button"
                     class="btn-sm btn-ghost"
                     title="Archiver"

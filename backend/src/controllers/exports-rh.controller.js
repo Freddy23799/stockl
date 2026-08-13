@@ -401,6 +401,26 @@ async function verifier(req, res) {
     return res.json({ valide: true, type: 'FACTURE', donnees: facture });
   }
 
+  if (resultat.type === 'ATTESTATION') {
+    const { rows: attestations } = await pool.query(
+      `SELECT d.numero, d.date_debut_stage, d.date_fin_stage, d.maitre_stage, d.theme_stage,
+              d.created_at, e.prenom, e.nom, e.matricule
+         FROM stagiaires_documents d
+         JOIN employes e ON e.id = d.employe_id
+        WHERE d.numero = $1 AND d.type = 'attestation'`,
+      [resultat.identifiant]
+    );
+    const attestation = attestations[0];
+    if (!attestation) {
+      return res.json({
+        valide: false,
+        type: 'ATTESTATION',
+        raison: 'Signature correcte, mais cette attestation est introuvable dans le systeme',
+      });
+    }
+    return res.json({ valide: true, type: 'ATTESTATION', donnees: attestation });
+  }
+
   const { rows } = await pool.query(
     `SELECT v.numero_recu, v.montant, v.paye_le, v.mode_paiement, v.est_solde,
             l.matricule_snapshot, l.nom_complet_snapshot, l.fonction_snapshot, l.net_a_payer,

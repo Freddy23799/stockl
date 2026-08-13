@@ -11,3 +11,7 @@ uploads/logo/*
 # n'ont pas leur place dans l'historique et pesent plusieurs mega-octets.
 uploads/employes/*
 uploads/documents/*
+
+# Attestations de stage generees : documents nominatifs regenerables a la
+# demande (voir stagiaires.controller.js), jamais dans l'historique.
+uploads/attestations/*

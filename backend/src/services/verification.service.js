@@ -21,7 +21,7 @@ const PREFIXE = 'MACHIBEL';
 // devront rester verifiables. Sans ce numero, ils deviendraient tous invalides.
 const VERSION = '1';
 
-const TYPES = { BADGE: 'BADGE', RECU: 'RECU', FACTURE: 'FACTURE' };
+const TYPES = { BADGE: 'BADGE', RECU: 'RECU', FACTURE: 'FACTURE', ATTESTATION: 'ATTESTATION' };
 
 // 16 caracteres hexadecimaux, soit 64 bits. Falsifier une signature demanderait
 // des milliards d'essais, alors qu'un QR plus long devient illisible une fois
@@ -105,8 +105,9 @@ async function qrEnPng(contenu, { taille = 320, marge = 1 } = {}) {
 const jetonBadge = (matricule) => composerJeton(TYPES.BADGE, matricule);
 const jetonRecu = (numeroRecu) => composerJeton(TYPES.RECU, numeroRecu);
 const jetonFacture = (numeroFacture) => composerJeton(TYPES.FACTURE, numeroFacture);
+const jetonAttestation = (numero) => composerJeton(TYPES.ATTESTATION, numero);
 
 module.exports = {
   composerJeton, verifierJeton, qrEnPng,
-  jetonBadge, jetonRecu, jetonFacture, TYPES,
+  jetonBadge, jetonRecu, jetonFacture, jetonAttestation, TYPES,
 };

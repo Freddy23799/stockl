@@ -1,20 +1,6 @@
 const pool = require('../config/db');
 const { logAudit } = require('../db/audit');
-
-function genererCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
-
-// Genere un code a 6 chiffres unique. Le code identifie une vendeuse de facon
-// permanente - il n'est jamais reattribue ni modifie apres creation.
-async function genererCodeUnique(client) {
-  for (let tentative = 0; tentative < 20; tentative += 1) {
-    const code = genererCode();
-    const { rows } = await client.query('SELECT 1 FROM vendeuses WHERE code = $1', [code]);
-    if (rows.length === 0) return code;
-  }
-  throw new Error('Impossible de generer un code vendeuse unique');
-}
+const { genererCodeUnique } = require('../utils/codeVendeuse');
 
 async function getByCode(req, res) {
   const { rows } = await pool.query('SELECT * FROM vendeuses WHERE code = $1', [req.params.code]);

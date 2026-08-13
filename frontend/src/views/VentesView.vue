@@ -24,9 +24,13 @@ const ventes = ref([])
 const loading = ref(true)
 const erreur = ref('')
 
-const ongletActif = ref('caisse')
+// Seuls l'admin (caisse partagee) et une vendeuse connectee (sa propre vente)
+// peuvent enregistrer une vente - voir ventes.controller.js. Comptabilite et
+// gestionnaire de stock n'ont acces qu'a l'historique, en lecture.
+const peutEncaisser = computed(() => auth.hasRole('vendeuse'))
+const ongletActif = ref(peutEncaisser.value ? 'caisse' : 'historique')
 const onglets = computed(() => [
-  { id: 'caisse', label: 'Nouvelle vente', icon: 'cart', count: lignesPanier.value.length || null },
+  ...(peutEncaisser.value ? [{ id: 'caisse', label: 'Nouvelle vente', icon: 'cart', count: lignesPanier.value.length || null }] : []),
   { id: 'historique', label: 'Historique', icon: 'history', count: total.value },
 ])
 
@@ -420,7 +424,9 @@ onMounted(async () => {
     await Promise.all([
       chargerProduits().then(() => { catalogueCharge = true }),
       chargerVentes(),
-      api.get('/vendeuses').then((r) => { vendeuses.value = r.data }),
+      // Reserve a l'admin : /vendeuses gere les fiches vendeuses (comptes,
+      // codes), un perimetre RH ferme aux autres roles.
+      auth.isAdmin ? api.get('/vendeuses').then((r) => { vendeuses.value = r.data }) : Promise.resolve(),
     ])
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
@@ -464,7 +470,10 @@ onUnmounted(() => {
     <!-- Caisse ---------------------------------------------------------- -->
     <div v-if="ongletActif === 'caisse'" class="caisse">
       <div class="stack">
-        <div class="card">
+        <!-- Une vendeuse connectee vend toujours en son propre nom : ce choix
+             n'a de sens que pour l'admin, qui opere une caisse partagee et
+             attribue chaque vente au comptoir ou a une vendeuse par son code. -->
+        <div v-if="auth.isAdmin" class="card">
           <div class="card-head">
             <div class="card-head-text">
               <h2>Type de vente</h2>
@@ -781,7 +790,7 @@ onUnmounted(() => {
               <label>Au</label>
               <input v-model="filtres.to" type="date" />
             </div>
-            <div class="field" style="min-width: 180px">
+            <div v-if="auth.isAdmin" class="field" style="min-width: 180px">
               <label>Vendeuse</label>
               <select v-model="filtres.vendeuse_id">
                 <option value="">Toutes</option>

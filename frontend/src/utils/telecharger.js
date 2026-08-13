@@ -65,15 +65,22 @@ function enregistrerFichier(url, nomFichier) {
  * @param {object} [options.params]      filtres, identiques a ceux de l'ecran
  * @param {string} options.libelle       nom lisible affiche dans l'indicateur
  * @param {string} options.nomFichier    nom propose a l'enregistrement
+ * @param {'get'|'post'} [options.method] 'post' pour un endpoint qui GENERE le
+ *   document (badge, attestation) au lieu de le lire : le corps de la requete
+ *   porte alors les donnees de generation.
+ * @param {object} [options.data]        corps envoye si method vaut 'post'
  * @returns {Promise<boolean>} vrai si le fichier a bien ete recu
  */
-export async function telechargerDocument(chemin, { params = {}, libelle, nomFichier }) {
+export async function telechargerDocument(chemin, { params = {}, libelle, nomFichier, method = 'get', data } = {}) {
   const telechargements = useTelechargementsStore()
   const controleur = new AbortController()
   const id = telechargements.ajouter({ libelle, nomFichier, controleur })
 
   try {
-    const reponse = await api.get(chemin, {
+    const reponse = await api.request({
+      url: chemin,
+      method,
+      data,
       params,
       responseType: 'blob',
       signal: controleur.signal,

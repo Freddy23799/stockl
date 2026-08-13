@@ -4,10 +4,30 @@ const { sortieStockPourVente, StockInsuffisantError, IncoherenceStockError } = r
 const { getPagination } = require('../utils/pagination');
 const { reserverNumero, facturationActive } = require('../services/facture.service');
 
+// Fiche vendeuse liee au compte connecte, si le role est 'vendeuse'. Une
+// vendeuse connectee ne doit jamais pouvoir agir au nom d'une autre : ce
+// lookup sert a IGNORER tout vendeuse_id/vendeuse_code venu du corps de la
+// requete et a forcer la valeur qui lui appartient reellement.
+async function vendeuseDuCompte(client, utilisateurId) {
+  const { rows } = await client.query(
+    'SELECT id, actif FROM vendeuses WHERE compte_utilisateur_id = $1',
+    [utilisateurId]
+  );
+  return rows[0] || null;
+}
+
 async function list(req, res) {
-  const { from, to, vendeuse_id, type } = req.query;
+  const { from, to, type } = req.query;
+  let { vendeuse_id } = req.query;
   const conditions = [];
   const params = [];
+
+  // Une vendeuse ne voit jamais que son propre historique, quel que soit le
+  // filtre demande dans l'URL.
+  if (req.user.role === 'vendeuse') {
+    const vendeuse = await vendeuseDuCompte(pool, req.user.id);
+    vendeuse_id = vendeuse ? vendeuse.id : 0;
+  }
 
   if (from) { params.push(from); conditions.push(`date >= $${params.length}`); }
   if (to) { params.push(to); conditions.push(`date <= $${params.length}`); }
@@ -36,6 +56,13 @@ async function getById(req, res) {
   const vente = venteRows[0];
   if (!vente) return res.status(404).json({ message: 'Vente introuvable' });
 
+  if (req.user.role === 'vendeuse') {
+    const vendeuse = await vendeuseDuCompte(pool, req.user.id);
+    if (!vendeuse || vente.vendeuse_id !== vendeuse.id) {
+      return res.status(404).json({ message: 'Vente introuvable' });
+    }
+  }
+
   const { rows: lignes } = await pool.query(
     `SELECT vl.*, p.nom AS produit_nom, p.photo AS produit_photo
      FROM ventes_lignes vl JOIN produits p ON p.id = vl.produit_id
@@ -48,10 +75,22 @@ async function getById(req, res) {
 async function create(req, res) {
   let { type, vendeuse_id, vendeuse_code, lignes } = req.body;
 
-  // Identification par code a 6 chiffres : la vendeuse presente son code au
-  // moment de la vente, la vente est enregistree comme si c'etait elle qui
-  // avait vendu - sans compte ni session.
-  if (vendeuse_code && !vendeuse_id) {
+  // Une vendeuse connectee enregistre TOUJOURS sa propre vente : tout
+  // vendeuse_id/vendeuse_code envoye dans le corps est ignore, sans quoi elle
+  // pourrait attribuer la vente a une collegue.
+  if (req.user.role === 'vendeuse') {
+    const vendeuse = await vendeuseDuCompte(pool, req.user.id);
+    if (!vendeuse || !vendeuse.actif) {
+      return res.status(403).json({ message: 'Aucune fiche vendeuse active n\'est liee a ce compte' });
+    }
+    type = 'vendeuse';
+    vendeuse_id = vendeuse.id;
+    vendeuse_code = undefined;
+  } else if (vendeuse_code && !vendeuse_id) {
+    // Identification par code a 6 chiffres : la vendeuse presente son code au
+    // moment de la vente, la vente est enregistree comme si c'etait elle qui
+    // avait vendu - sans compte ni session. Reserve aux comptes qui operent
+    // la caisse (admin), pas a une vendeuse deja connectee (cas ci-dessus).
     const { rows: parCodeRows } = await pool.query('SELECT id, actif FROM vendeuses WHERE code = $1', [vendeuse_code]);
     if (parCodeRows.length === 0) {
       return res.status(400).json({ message: 'Aucune vendeuse ne correspond a ce code' });

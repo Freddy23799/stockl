@@ -5,6 +5,12 @@ const { jwtSecret } = require('../config');
 const { logAudit } = require('../db/audit');
 const { genererNomUtilisateurUnique } = require('../utils/identifiant');
 const { genererMotDePasse } = require('../utils/motdepasse');
+const { genererCodeUnique } = require('../utils/codeVendeuse');
+
+// Roles pouvant se connecter. Chacun est cree uniquement par un administrateur
+// (voir routes/utilisateurs.routes.js, tout admin-gated) ; le perimetre de
+// chaque role est applique cote backend, route par route.
+const ROLES_AUTORISES = ['admin', 'vendeuse', 'comptabilite', 'gestionnaire_stock'];
 
 // Champs d'un compte retenus pour le journal. Liste blanche explicite : la
 // ligne `utilisateurs` porte aussi `password_hash`, qui ne doit sortir de la
@@ -28,30 +34,87 @@ function libellesCompte(utilisateur) {
   };
 }
 
+// Le code vendeuse remonte pour les comptes role='vendeuse' : c'est ce qui
+// permet a l'admin de voir, au meme endroit, le login ET le code comptoir
+// d'une meme personne.
 async function list(req, res) {
   const { rows } = await pool.query(
-    `SELECT id, prenom, nom, nom_utilisateur, email, role, actif, created_at
-     FROM utilisateurs ORDER BY nom, prenom`
+    `SELECT u.id, u.prenom, u.nom, u.nom_utilisateur, u.email, u.role, u.actif, u.created_at,
+            v.code AS vendeuse_code
+     FROM utilisateurs u
+     LEFT JOIN vendeuses v ON v.compte_utilisateur_id = u.id
+     ORDER BY u.nom, u.prenom`
   );
   res.json(rows);
 }
 
-// Seuls des comptes Administrateur existent : les vendeuses ne sont pas des
-// utilisateurs, seulement des fiches de reference identifiees par un code.
+// Un compte est cree avec un role parmi ROLES_AUTORISES (par defaut 'admin',
+// pour ne rien changer aux appels existants). Un compte 'vendeuse' doit
+// obligatoirement etre rattache a un employe : c'est ce rattachement qui
+// cree-ou-lie la fiche `vendeuses` (et son code a 6 chiffres) au compte de
+// connexion, sans dupliquer la personne dans le systeme.
 //
-// L'administrateur ne saisit que le prenom et le nom. L'identifiant de connexion
-// et le mot de passe initial sont generes par le systeme et renvoyes UNE SEULE
-// FOIS dans cette reponse : le mot de passe n'est stocke que sous forme de hash,
-// il est donc definitivement irrecuperable ensuite.
+// L'administrateur ne saisit que le prenom et le nom (et l'employe, pour une
+// vendeuse). L'identifiant de connexion et le mot de passe initial sont
+// generes par le systeme et renvoyes UNE SEULE FOIS dans cette reponse : le
+// mot de passe n'est stocke que sous forme de hash, il est donc
+// definitivement irrecuperable ensuite.
 async function create(req, res) {
-  const { prenom, nom, email } = req.body;
+  const { prenom, nom, email, role: roleDemande, employe_id: employeId } = req.body;
   if (!prenom || !String(prenom).trim() || !nom || !String(nom).trim()) {
     return res.status(400).json({ message: 'Le prenom et le nom sont requis' });
+  }
+
+  const role = roleDemande || 'admin';
+  if (!ROLES_AUTORISES.includes(role)) {
+    return res.status(400).json({
+      message: `Role invalide. Valeurs acceptees : ${ROLES_AUTORISES.join(', ')}.`,
+    });
+  }
+  if (role === 'vendeuse' && !employeId) {
+    return res.status(400).json({
+      message: 'Choisissez l\'employe a qui attribuer ce compte vendeuse',
+      code: 'EMPLOYE_REQUIS',
+    });
   }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    let employe = null;
+    let vendeuseExistante = null;
+    if (role === 'vendeuse') {
+      const { rows: employes } = await client.query(
+        'SELECT id, prenom, nom, telephone, actif FROM employes WHERE id = $1',
+        [employeId]
+      );
+      employe = employes[0];
+      if (!employe) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Employe introuvable' });
+      }
+      if (!employe.actif) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          message: 'Cet employe est archive : il ne peut pas recevoir de compte vendeuse.',
+          code: 'EMPLOYE_ARCHIVE',
+        });
+      }
+
+      const { rows: dejaRows } = await client.query(
+        'SELECT id, code, actif, compte_utilisateur_id FROM vendeuses WHERE employe_id = $1',
+        [employeId]
+      );
+      vendeuseExistante = dejaRows[0] || null;
+      if (vendeuseExistante?.compte_utilisateur_id) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          message: 'Cet employe a deja un compte vendeuse.',
+          code: 'DEJA_COMPTE_VENDEUSE',
+        });
+      }
+    }
 
     const nomUtilisateur = await genererNomUtilisateurUnique(client, prenom, nom);
     const motDePasseInitial = genererMotDePasse();
@@ -59,23 +122,47 @@ async function create(req, res) {
 
     const { rows } = await client.query(
       `INSERT INTO utilisateurs (prenom, nom, nom_utilisateur, email, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5, 'admin')
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, prenom, nom, nom_utilisateur, email, role, actif, created_at`,
-      [String(prenom).trim(), String(nom).trim(), nomUtilisateur, email || null, passwordHash]
+      [String(prenom).trim(), String(nom).trim(), nomUtilisateur, email || null, passwordHash, role]
     );
     const utilisateur = rows[0];
+
+    // Cree-ou-lie la fiche vendeuse UNE FOIS le compte pose, pour disposer de
+    // son id : une fiche deja existante (code deja distribue au comptoir)
+    // recoit simplement son lien de connexion, sans perdre son code ni son
+    // historique de ventes.
+    let vendeuseCode = null;
+    if (role === 'vendeuse') {
+      if (vendeuseExistante) {
+        const { rows: majRows } = await client.query(
+          'UPDATE vendeuses SET compte_utilisateur_id = $1 WHERE id = $2 RETURNING code',
+          [utilisateur.id, vendeuseExistante.id]
+        );
+        vendeuseCode = majRows[0].code;
+      } else {
+        const nomComplet = `${employe.prenom} ${employe.nom}`.trim();
+        const code = await genererCodeUnique(client);
+        await client.query(
+          `INSERT INTO vendeuses (nom, contact, code, employe_id, compte_utilisateur_id)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [nomComplet, employe.telephone || null, code, employeId, utilisateur.id]
+        );
+        vendeuseCode = code;
+      }
+    }
 
     // Le mot de passe genere n'apparait jamais dans l'audit.
     await logAudit(client, {
       typeOperation: 'utilisateur_creation',
       entiteId: utilisateur.id,
       utilisateurId: req.user?.id,
-      details: libellesCompte(utilisateur),
+      details: { ...libellesCompte(utilisateur), role, employe_id: role === 'vendeuse' ? employeId : null },
       apres: etatUtilisateurPourAudit(utilisateur),
     });
 
     await client.query('COMMIT');
-    res.status(201).json({ ...utilisateur, mot_de_passe_initial: motDePasseInitial });
+    res.status(201).json({ ...utilisateur, mot_de_passe_initial: motDePasseInitial, vendeuse_code: vendeuseCode });
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') {

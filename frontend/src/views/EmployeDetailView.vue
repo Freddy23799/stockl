@@ -32,6 +32,7 @@ const onglets = computed(() => [
   { id: 'carriere', label: 'Carriere', icon: 'trending', count: employe.value?.carriere?.length ?? null },
   { id: 'documents', label: 'Documents', icon: 'clipboard', count: employe.value?.documents?.length ?? null },
   ...(modules.paie ? [{ id: 'paie', label: 'Paie', icon: 'wallet', count: paie.value?.lignes?.length ?? null }] : []),
+  ...(modules.badges ? [{ id: 'stage', label: 'Stage', icon: 'briefcase', count: stagiaireDocuments.value.length || null }] : []),
 ])
 
 const nomComplet = computed(() =>
@@ -428,7 +429,68 @@ async function telechargerRecu(numero) {
   })
 }
 
-onMounted(charger)
+/* --- Badge et attestation de stage ----------------------------------------- */
+// Distinct du bouton "Badge" de l'entete : celui-ci journalise chaque emission
+// dans stagiaires_documents (voir stagiaires.controller.js), pour garder une
+// trace de qui a genere quoi et quand.
+
+const stagiaireDocuments = ref([])
+
+async function chargerStagiaireDocuments() {
+  try {
+    const { data } = await api.get(`/employes/${route.params.id}/stagiaire/documents`)
+    stagiaireDocuments.value = data
+  } catch {
+    stagiaireDocuments.value = []
+  }
+}
+
+async function genererBadgeStagiaire() {
+  const ok = await telechargerDocument(`/employes/${route.params.id}/stagiaire/badge`, {
+    method: 'post',
+    libelle: `Badge ${employe.value?.matricule}`,
+    nomFichier: nommerDocument(`badge-${employe.value?.matricule}`),
+  })
+  if (ok) await chargerStagiaireDocuments()
+}
+
+const attestationForm = reactive({
+  date_debut_stage: '', date_fin_stage: '', maitre_stage: '', theme_stage: '', mention: '',
+})
+const attestationSoumission = ref(false)
+
+async function genererAttestationStage() {
+  attestationSoumission.value = true
+  try {
+    const ok = await telechargerDocument(`/employes/${route.params.id}/stagiaire/attestation`, {
+      method: 'post',
+      data: { ...attestationForm },
+      libelle: `Attestation de stage ${nomComplet.value}`,
+      nomFichier: nommerDocument(`attestation-stage-${employe.value?.matricule}`),
+    })
+    if (ok) {
+      toasts.succes('Attestation generee')
+      Object.assign(attestationForm, {
+        date_debut_stage: '', date_fin_stage: '', maitre_stage: '', theme_stage: '', mention: '',
+      })
+      await chargerStagiaireDocuments()
+    }
+  } finally {
+    attestationSoumission.value = false
+  }
+}
+
+async function retelechargerAttestation(doc) {
+  await telechargerDocument(`/employes/${route.params.id}/stagiaire/documents/${doc.id}/pdf`, {
+    libelle: `Attestation ${doc.numero}`,
+    nomFichier: `${doc.numero}.pdf`,
+  })
+}
+
+onMounted(() => {
+  charger()
+  chargerStagiaireDocuments()
+})
 </script>
 
 <template>
@@ -778,6 +840,100 @@ onMounted(charger)
                       </button>
                       <span v-if="!l.versements.length" class="small muted">Aucun</span>
                     </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ Stage ============ -->
+      <div v-if="modules.badges" v-show="ongletActif === 'stage'" class="card">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h2>Badge et attestation de stage</h2>
+            <p class="card-head-sub">
+              Genere un badge ou une attestation officielle pour cet employe. Chaque emission est
+              conservee ci-dessous, avec son numero pour l'attestation.
+            </p>
+          </div>
+          <button type="button" @click="genererBadgeStagiaire">
+            <Icon name="idCard" :size="15" /> Generer le badge
+          </button>
+        </div>
+
+        <div class="card-body">
+          <form class="stack" style="gap: 12px" @submit.prevent="genererAttestationStage">
+            <div class="field-row">
+              <div class="field">
+                <label>Debut du stage</label>
+                <input v-model="attestationForm.date_debut_stage" type="date" required />
+              </div>
+              <div class="field">
+                <label>Fin du stage</label>
+                <input v-model="attestationForm.date_fin_stage" type="date" required />
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Maitre de stage <span class="muted small">(facultatif)</span></label>
+                <input v-model="attestationForm.maitre_stage" maxlength="150" placeholder="Nom de l'encadrant" />
+              </div>
+              <div class="field">
+                <label>Theme du stage <span class="muted small">(facultatif)</span></label>
+                <input v-model="attestationForm.theme_stage" maxlength="255" />
+              </div>
+            </div>
+            <div class="field">
+              <label>Mention <span class="muted small">(facultative)</span></label>
+              <textarea v-model="attestationForm.mention" rows="2" maxlength="500" placeholder="Appreciation libre" />
+            </div>
+            <div>
+              <button type="submit" class="primary" :disabled="attestationSoumission">
+                <span v-if="attestationSoumission" class="spinner" />
+                Generer l'attestation
+              </button>
+            </div>
+          </form>
+
+          <h3 class="mt-4 mb-2">Documents generes</h3>
+          <EmptyState
+            v-if="!stagiaireDocuments.length"
+            icon="briefcase"
+            title="Aucun document genere"
+            desc="Les badges et attestations generes pour cet employe apparaitront ici."
+          />
+          <div v-else class="table-wrap">
+            <table class="table-cards">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Detail</th>
+                  <th class="td-num hide-sm">Genere le</th>
+                  <th class="td-actions"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="d in stagiaireDocuments" :key="d.id">
+                  <td data-label="Type"><span class="badge">{{ d.type === 'attestation' ? 'Attestation' : 'Badge' }}</span></td>
+                  <td data-label="Detail">
+                    <span v-if="d.type === 'attestation'">
+                      {{ d.numero }} — du {{ formatDateCourt(d.date_debut_stage) }} au {{ formatDateCourt(d.date_fin_stage) }}
+                    </span>
+                    <span v-else class="small muted">—</span>
+                  </td>
+                  <td data-label="Genere le" class="td-num small muted nowrap hide-sm">{{ formatDate(d.created_at) }}</td>
+                  <td data-label="" class="td-actions">
+                    <button
+                      v-if="d.type === 'attestation'"
+                      type="button"
+                      class="btn-sm btn-ghost"
+                      title="Retelecharger"
+                      @click="retelechargerAttestation(d)"
+                    >
+                      <Icon name="download" :size="15" />
+                    </button>
                   </td>
                 </tr>
               </tbody>

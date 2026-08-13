@@ -4,7 +4,7 @@ const { requireAuth, requireRole } = require('../middleware/auth.middleware');
 const { requireModule } = require('../middleware/module.middleware');
 const fournisseursController = require('../controllers/fournisseurs.controller');
 
-router.use(requireAuth, requireRole('admin'), requireModule('fournisseurs'));
+router.use(requireAuth, requireRole('admin', 'gestionnaire_stock'), requireModule('fournisseurs'));
 
 router.get('/', fournisseursController.list);
 router.get('/totaux', fournisseursController.listAvecTotaux);

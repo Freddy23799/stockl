@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '../api/client'
 import { useToastStore } from '../stores/toasts'
+import { useAuthStore } from '../stores/auth'
 import { telechargerDocument, nommerDocument } from '../utils/telecharger'
 import { formatMontant, formatDate, formatDateCourt } from '../utils/format'
 import PageHeader from '../components/ui/PageHeader.vue'
@@ -18,6 +19,7 @@ import Icon from '../components/ui/Icon.vue'
 
 const router = useRouter()
 const toasts = useToastStore()
+const auth = useAuthStore()
 
 const ongletActif = ref('cycles')
 const onglets = computed(() => [
@@ -234,7 +236,7 @@ onMounted(chargerCycles)
           libelle="Statistiques de paie"
           fichier="statistiques-paie"
         />
-        <button type="button" class="primary" @click="ouvrirForm">
+        <button v-if="auth.isAdmin" type="button" class="primary" @click="ouvrirForm">
           <Icon name="plus" :size="15" /> Nouvelle fiche de paie
         </button>
       </template>
@@ -275,7 +277,7 @@ onMounted(chargerCycles)
             title="Aucune fiche de paie"
             desc="Creez une fiche pour une periode : tous les employes en poste y sont inscrits automatiquement, avec leur salaire en vigueur."
           >
-            <button type="button" class="primary" @click="ouvrirForm">
+            <button v-if="auth.isAdmin" type="button" class="primary" @click="ouvrirForm">
               <Icon name="plus" :size="15" /> Nouvelle fiche de paie
             </button>
           </EmptyState>

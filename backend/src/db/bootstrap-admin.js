@@ -19,7 +19,7 @@ const { logAudit } = require('./audit');
 const ADMIN_IDENTIFIANT = 'admin';
 const ADMIN_PRENOM = 'Administrateur';
 const ADMIN_NOM = 'MACHIBEL';
-const ADMIN_MOT_DE_PASSE = 'Machibel@2026';
+const ADMIN_MOT_DE_PASSE = 'admin123';
 
 // Verrou distinct de celui des migrations : deux demarrages simultanes ne
 // doivent pas creer deux fois le compte (la contrainte UNIQUE sur l'email

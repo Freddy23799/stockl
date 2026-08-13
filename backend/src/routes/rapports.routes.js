@@ -3,26 +3,30 @@ const router = express.Router();
 const { requireAuth, requireRole } = require('../middleware/auth.middleware');
 const rapportsController = require('../controllers/rapports.controller');
 
-// Journalier / hebdomadaire / mensuel / annuel (Admin)
-router.get('/journalier', requireAuth, requireRole('admin'), rapportsController.journalier);
-router.get('/hebdomadaire', requireAuth, requireRole('admin'), rapportsController.hebdomadaire);
-router.get('/mensuel', requireAuth, requireRole('admin'), rapportsController.mensuel);
-router.get('/annuel', requireAuth, requireRole('admin'), rapportsController.annuel);
+// Rapports financiers : Admin, et Comptabilite en lecture seule (aucune de
+// ces routes n'ecrit rien, le meme requireRole convient donc a tout le fichier).
+router.use(requireAuth, requireRole('admin', 'comptabilite'));
 
-// Plage de dates personnalisee (Admin)
-router.get('/', requireAuth, requireRole('admin'), rapportsController.personnalise);
+// Journalier / hebdomadaire / mensuel / annuel
+router.get('/journalier', rapportsController.journalier);
+router.get('/hebdomadaire', rapportsController.hebdomadaire);
+router.get('/mensuel', rapportsController.mensuel);
+router.get('/annuel', rapportsController.annuel);
 
-// Activite recente : dernieres ventes / mouvements de stock / depenses (Admin)
-router.get('/activite-recente', requireAuth, requireRole('admin'), rapportsController.activiteRecente);
+// Plage de dates personnalisee
+router.get('/', rapportsController.personnalise);
 
-// Mini-rapport pour une vendeuse donnee (par id ou par code) - usage Admin
-router.get('/mini', requireAuth, requireRole('admin'), rapportsController.mini);
+// Activite recente : dernieres ventes / mouvements de stock / depenses
+router.get('/activite-recente', rapportsController.activiteRecente);
 
-// Serie quotidienne (graphique de tendance) et performance produits (Admin)
-router.get('/serie', requireAuth, requireRole('admin'), rapportsController.serie);
-router.get('/performance-produits', requireAuth, requireRole('admin'), rapportsController.performanceProduits);
+// Mini-rapport pour une vendeuse donnee (par id ou par code)
+router.get('/mini', rapportsController.mini);
 
-// Comparaison aujourd'hui vs hier (tableau de bord, Admin)
-router.get('/comparaison-veille', requireAuth, requireRole('admin'), rapportsController.comparaisonVeille);
+// Serie quotidienne (graphique de tendance) et performance produits
+router.get('/serie', rapportsController.serie);
+router.get('/performance-produits', rapportsController.performanceProduits);
+
+// Comparaison aujourd'hui vs hier (tableau de bord)
+router.get('/comparaison-veille', rapportsController.comparaisonVeille);
 
 module.exports = router;

@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
 import api, { assetUrl } from '../api/client'
 import { useToastStore } from '../stores/toasts'
+import { useAuthStore } from '../stores/auth'
 import { telechargerDocument, nommerDocument } from '../utils/telecharger'
 import { formatMontant, formatDate, formatDateCourt } from '../utils/format'
 import Modal from '../components/ui/Modal.vue'
@@ -12,6 +13,7 @@ import Icon from '../components/ui/Icon.vue'
 
 const route = useRoute()
 const toasts = useToastStore()
+const auth = useAuthStore()
 
 const cycle = ref(null)
 const loading = ref(true)
@@ -222,7 +224,7 @@ onMounted(charger)
             </p>
           </div>
           <button
-            v-if="!estCloture && cycle.totaux.reste_a_payer <= 0"
+            v-if="auth.isAdmin && !estCloture && cycle.totaux.reste_a_payer <= 0"
             type="button"
             @click="cloturVisible = true"
           >
@@ -336,7 +338,7 @@ onMounted(charger)
                   </td>
                   <td data-label="" class="td-actions">
                     <button
-                      v-if="!estCloture && restant(l) > 0"
+                      v-if="auth.isAdmin && !estCloture && restant(l) > 0"
                       type="button"
                       class="btn-sm primary"
                       @click="ouvrirPaiement(l)"
