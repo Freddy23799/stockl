@@ -14,6 +14,9 @@ const routes = [
   { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
   { path: '/', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { requiresAuth: true, roles: ['admin', 'comptabilite'] } },
   { path: '/produits', name: 'produits', component: () => import('../views/ProduitsView.vue'), meta: { requiresAuth: true } },
+  { path: '/clients', name: 'clients', component: () => import('../views/ClientsView.vue'), meta: { requiresAuth: true, roles: ['admin', 'direction', 'comptabilite', 'secretaire', 'responsable_commercial', 'commercial', 'support'] } },
+  { path: '/approbations', name: 'approbations', component: () => import('../views/ApprobationsView.vue'), meta: { requiresAuth: true, roles: ['admin', 'direction', 'manager', 'gestionnaire_stock', 'comptabilite', 'responsable_rh', 'employe'] } },
+  { path: '/devis', name: 'devis', component: () => import('../views/DevisView.vue'), meta: { requiresAuth: true, roles: ['admin', 'direction', 'responsable_commercial', 'commercial'] } },
   { path: '/vendeuses', name: 'vendeuses', component: () => import('../views/VendeusesView.vue'), meta: { requiresAuth: true, module: 'ventes', roles: ['admin'] } },
   { path: '/ventes', name: 'ventes', component: () => import('../views/VentesView.vue'), meta: { requiresAuth: true, module: 'ventes', roles: ['admin', 'vendeuse', 'comptabilite', 'gestionnaire_stock'] } },
   { path: '/stock', name: 'stock', component: () => import('../views/StockView.vue'), meta: { requiresAuth: true } },
@@ -26,6 +29,8 @@ const routes = [
   { path: '/rapports', name: 'rapports', component: () => import('../views/RapportsView.vue'), meta: { requiresAuth: true, roles: ['admin', 'comptabilite'] } },
   { path: '/parametres', name: 'parametres', component: () => import('../views/ParametresView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
   { path: '/historique', name: 'historique', component: () => import('../views/HistoriqueView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
+  { path: '/roles', name: 'roles', component: () => import('../views/RolesPermissionsView.vue'), meta: { requiresAuth: true, roles: ['admin'] } },
+  { path: '/entreprises', name: 'entreprises', component: () => import('../views/EntreprisesView.vue'), meta: { requiresAuth: true, roles: ['operateur'] } },
 ]
 
 const router = createRouter({
@@ -41,6 +46,7 @@ const ACCUEIL_PAR_ROLE = {
   vendeuse: 'ventes',
   gestionnaire_stock: 'stock',
   comptabilite: 'depenses',
+  operateur: 'entreprises',
 }
 
 function accueilPourRole(role) {
@@ -62,7 +68,11 @@ router.beforeEach(async (to) => {
     return { name: 'login' }
   }
 
-  if (auth.isAuthenticated && !modules.charge) {
+  // L'operateur plateforme n'appartient a aucune entreprise : il ne peut et
+  // ne doit pas lire les parametres metier d'une boutique. Tenter ce chargement
+  // renvoyait correctement 403 cote API, mais bloquait a tort sa redirection
+  // juste apres une authentification pourtant reussie.
+  if (auth.isAuthenticated && auth.user?.role !== 'operateur' && !modules.charge) {
     await modules.charger()
   }
 

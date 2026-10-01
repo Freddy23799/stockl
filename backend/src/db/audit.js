@@ -106,7 +106,12 @@ function preparerAudit(client, { typeOperation, avant = null, details = null }) 
   depotsParTransaction.set(client, depots);
 }
 
-async function logAudit(client, { typeOperation, entiteId = null, utilisateurId = null, details = null, avant = null, apres = null }) {
+// `entrepriseId` : NULL pour un evenement de la plateforme elle-meme (hors
+// perimetre de toute entreprise cliente - voir migration 030), sinon
+// l'entreprise concernee. Les appelants existants ne le passent pas encore
+// tous : c'est un chantier en cours, pas un oubli silencieux (voir le plan
+// d'architecture multi-entreprise).
+async function logAudit(client, { typeOperation, entiteId = null, utilisateurId = null, entrepriseId = null, details = null, avant = null, apres = null }) {
   const depot = depotsParTransaction.get(client)?.get(typeOperation) || null;
   const charge = construireCharge({
     details: { ...(depot?.details || {}), ...(details || {}) },
@@ -115,9 +120,9 @@ async function logAudit(client, { typeOperation, entiteId = null, utilisateurId 
   });
 
   const { rows } = await client.query(
-    `INSERT INTO historique_audit (type_operation, entite_id, utilisateur_id, details)
-     VALUES ($1, $2, $3, $4) RETURNING id`,
-    [typeOperation, entiteId, utilisateurId, charge ? JSON.stringify(charge) : null]
+    `INSERT INTO historique_audit (type_operation, entite_id, utilisateur_id, entreprise_id, details)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [typeOperation, entiteId, utilisateurId, entrepriseId, charge ? JSON.stringify(charge) : null]
   );
 
   if (depot) {

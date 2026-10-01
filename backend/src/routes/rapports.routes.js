@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { requireAuth, requireRole } = require('../middleware/auth.middleware');
+const { requireAuth } = require('../middleware/auth.middleware');
+const { requirePermission } = require('../middleware/permission.middleware');
 const rapportsController = require('../controllers/rapports.controller');
 
 // Rapports financiers : Admin, et Comptabilite en lecture seule (aucune de
 // ces routes n'ecrit rien, le meme requireRole convient donc a tout le fichier).
-router.use(requireAuth, requireRole('admin', 'comptabilite'));
+router.use(requireAuth, requirePermission('rapports', 'voir'));
 
 // Journalier / hebdomadaire / mensuel / annuel
 router.get('/journalier', rapportsController.journalier);

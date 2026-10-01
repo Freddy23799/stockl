@@ -1,19 +1,20 @@
 const express = require('express');
 const router = express.Router();
-const { requireAuth, requireRole } = require('../middleware/auth.middleware');
+const { requireAuth } = require('../middleware/auth.middleware');
+const { requirePermission } = require('../middleware/permission.middleware');
 const stockController = require('../controllers/stock.controller');
 
 // Etat du stock, seuils d'alerte, valorisation FIFO/CMP
-router.get('/', requireAuth, stockController.etat);
-router.get('/alertes', requireAuth, stockController.alertes);
+router.get('/', requireAuth, requirePermission('stock', 'voir'), stockController.etat);
+router.get('/alertes', requireAuth, requirePermission('stock', 'voir'), stockController.alertes);
 
 // Entree de stock (ravitaillement) : quantite + cout d'achat (unite d'achat -> conversion)
-router.post('/entrees', requireAuth, requireRole('admin', 'gestionnaire_stock'), stockController.creerEntree);
+router.post('/entrees', requireAuth, requirePermission('stock', 'creer'), stockController.creerEntree);
 
 // Ajustement hors vente : inventaire physique, perte, casse, vol, retour client
-router.post('/ajustements', requireAuth, requireRole('admin', 'gestionnaire_stock'), stockController.ajuster);
+router.post('/ajustements', requireAuth, requirePermission('stock', 'modifier'), stockController.ajuster);
 
 // Historique des mouvements (entrees/sorties), filtrable par produit/type/motif/periode
-router.get('/mouvements', requireAuth, requireRole('admin', 'gestionnaire_stock'), stockController.mouvements);
+router.get('/mouvements', requireAuth, requirePermission('stock_mouvements', 'voir'), stockController.mouvements);
 
 module.exports = router;

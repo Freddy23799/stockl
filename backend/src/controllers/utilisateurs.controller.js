@@ -7,11 +7,6 @@ const { genererNomUtilisateurUnique } = require('../utils/identifiant');
 const { genererMotDePasse } = require('../utils/motdepasse');
 const { genererCodeUnique } = require('../utils/codeVendeuse');
 
-// Roles pouvant se connecter. Chacun est cree uniquement par un administrateur
-// (voir routes/utilisateurs.routes.js, tout admin-gated) ; le perimetre de
-// chaque role est applique cote backend, route par route.
-const ROLES_AUTORISES = ['admin', 'vendeuse', 'comptabilite', 'gestionnaire_stock'];
-
 // Champs d'un compte retenus pour le journal. Liste blanche explicite : la
 // ligne `utilisateurs` porte aussi `password_hash`, qui ne doit sortir de la
 // base sous aucun pretexte - meme un hash n'a rien a faire dans un ecran
@@ -43,13 +38,16 @@ async function list(req, res) {
             v.code AS vendeuse_code
      FROM utilisateurs u
      LEFT JOIN vendeuses v ON v.compte_utilisateur_id = u.id
-     ORDER BY u.nom, u.prenom`
+     WHERE u.entreprise_id = $1
+     ORDER BY u.nom, u.prenom`,
+    [req.user.entrepriseId]
   );
   res.json(rows);
 }
 
-// Un compte est cree avec un role parmi ROLES_AUTORISES (par defaut 'admin',
-// pour ne rien changer aux appels existants). Un compte 'vendeuse' doit
+// Un compte est cree avec un role defini dans la matrice de son entreprise.
+// Les roles personnalises deviennent donc attribuables sans liste codee en dur.
+// Un compte 'vendeuse' doit
 // obligatoirement etre rattache a un employe : c'est ce rattachement qui
 // cree-ou-lie la fiche `vendeuses` (et son code a 6 chiffres) au compte de
 // connexion, sans dupliquer la personne dans le systeme.
@@ -65,10 +63,14 @@ async function create(req, res) {
     return res.status(400).json({ message: 'Le prenom et le nom sont requis' });
   }
 
-  const role = roleDemande || 'admin';
-  if (!ROLES_AUTORISES.includes(role)) {
+  const role = String(roleDemande || 'admin').trim().toLowerCase();
+  const { rows: rolesValides } = await pool.query(
+    'SELECT code FROM roles WHERE entreprise_id = $1 AND code = $2',
+    [req.user.entrepriseId, role]
+  );
+  if (!rolesValides.length) {
     return res.status(400).json({
-      message: `Role invalide. Valeurs acceptees : ${ROLES_AUTORISES.join(', ')}.`,
+      message: 'Role invalide ou non disponible dans cette entreprise.',
     });
   }
   if (role === 'vendeuse' && !employeId) {
@@ -86,8 +88,8 @@ async function create(req, res) {
     let vendeuseExistante = null;
     if (role === 'vendeuse') {
       const { rows: employes } = await client.query(
-        'SELECT id, prenom, nom, telephone, actif FROM employes WHERE id = $1',
-        [employeId]
+        'SELECT id, prenom, nom, telephone, actif FROM employes WHERE id = $1 AND entreprise_id = $2',
+        [employeId, req.user.entrepriseId]
       );
       employe = employes[0];
       if (!employe) {
@@ -116,15 +118,17 @@ async function create(req, res) {
       }
     }
 
-    const nomUtilisateur = await genererNomUtilisateurUnique(client, prenom, nom);
+    const nomUtilisateur = await genererNomUtilisateurUnique(client, prenom, nom, {
+      entrepriseId: req.user.entrepriseId,
+    });
     const motDePasseInitial = genererMotDePasse();
     const passwordHash = await bcrypt.hash(motDePasseInitial, 10);
 
     const { rows } = await client.query(
-      `INSERT INTO utilisateurs (prenom, nom, nom_utilisateur, email, password_hash, role)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO utilisateurs (prenom, nom, nom_utilisateur, email, password_hash, role, entreprise_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, prenom, nom, nom_utilisateur, email, role, actif, created_at`,
-      [String(prenom).trim(), String(nom).trim(), nomUtilisateur, email || null, passwordHash, role]
+      [String(prenom).trim(), String(nom).trim(), nomUtilisateur, email || null, passwordHash, role, req.user.entrepriseId]
     );
     const utilisateur = rows[0];
 
@@ -199,8 +203,8 @@ async function modifier(req, res) {
 
     const { rows: existantsRows } = await client.query(
       `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
-         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
-      [id]
+         FROM utilisateurs WHERE id = $1 AND entreprise_id = $2 FOR UPDATE`,
+      [id, req.user.entrepriseId]
     );
     if (existantsRows.length === 0) {
       await client.query('ROLLBACK');
@@ -209,7 +213,10 @@ async function modifier(req, res) {
     const existant = existantsRows[0];
 
     const nomUtilisateur = regenerer_identifiant
-      ? await genererNomUtilisateurUnique(client, prenom, nom, { exclureId: Number(id) })
+      ? await genererNomUtilisateurUnique(client, prenom, nom, {
+        exclureId: Number(id),
+        entrepriseId: req.user.entrepriseId,
+      })
       : existant.nom_utilisateur;
 
     // L'email n'est ecrit que si le corps le porte. Sans ce test, une requete
@@ -288,8 +295,8 @@ async function reinitialiserMotDePasse(req, res) {
 
     const { rows: existantsRows } = await client.query(
       `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
-         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
-      [id]
+         FROM utilisateurs WHERE id = $1 AND entreprise_id = $2 FOR UPDATE`,
+      [id, req.user.entrepriseId]
     );
     if (existantsRows.length === 0) {
       await client.query('ROLLBACK');
@@ -355,7 +362,7 @@ async function changerMotDePasse(req, res) {
   const client = await pool.connect();
   try {
     const { rows: utilisateurRows } = await client.query(
-      `SELECT id, prenom, nom, nom_utilisateur, email, role, password_hash
+      `SELECT id, prenom, nom, nom_utilisateur, email, role, entreprise_id, password_hash
        FROM utilisateurs WHERE id = $1 AND actif = true`,
       [req.user.id]
     );
@@ -401,9 +408,11 @@ async function changerMotDePasse(req, res) {
     // Jeton neuf renvoye immediatement : la session continue sans repasser par
     // l'ecran de connexion. Le compteur d'expiration repart de zero.
     const utilisateur = utilisateurRows[0];
-    const token = jwt.sign({ id: utilisateur.id, role: utilisateur.role }, jwtSecret, {
-      expiresIn: '12h',
-    });
+    const token = jwt.sign(
+      { id: utilisateur.id, role: utilisateur.role, entrepriseId: utilisateur.entreprise_id },
+      jwtSecret,
+      { expiresIn: '12h' }
+    );
 
     res.json({
       message: 'Mot de passe modifie',
@@ -415,6 +424,7 @@ async function changerMotDePasse(req, res) {
         nom_utilisateur: utilisateur.nom_utilisateur,
         email: utilisateur.email,
         role: utilisateur.role,
+        entreprise_id: utilisateur.entreprise_id,
       },
     });
   } finally {
@@ -446,8 +456,8 @@ async function desactiver(req, res) {
     // de reinitialisation de mot de passe.
     const { rows: restantsRows } = await client.query(
       `SELECT count(*)::int AS n FROM utilisateurs
-       WHERE role = 'admin' AND actif = true AND id <> $1`,
-      [id]
+       WHERE role = 'admin' AND actif = true AND id <> $1 AND entreprise_id = $2`,
+      [id, req.user.entrepriseId]
     );
     if (restantsRows[0].n === 0) {
       await client.query('ROLLBACK');
@@ -460,8 +470,8 @@ async function desactiver(req, res) {
 
     const { rows: existantsRows } = await client.query(
       `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
-         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
-      [id]
+         FROM utilisateurs WHERE id = $1 AND entreprise_id = $2 FOR UPDATE`,
+      [id, req.user.entrepriseId]
     );
     if (existantsRows.length === 0) {
       await client.query('ROLLBACK');
@@ -505,8 +515,8 @@ async function reactiver(req, res) {
 
     const { rows: existantsRows } = await client.query(
       `SELECT id, prenom, nom, nom_utilisateur, email, role, actif
-         FROM utilisateurs WHERE id = $1 FOR UPDATE`,
-      [id]
+         FROM utilisateurs WHERE id = $1 AND entreprise_id = $2 FOR UPDATE`,
+      [id, req.user.entrepriseId]
     );
     if (existantsRows.length === 0) {
       await client.query('ROLLBACK');

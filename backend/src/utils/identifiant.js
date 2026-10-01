@@ -24,8 +24,12 @@ function construireBase(prenom, nom) {
  * `exclureId` sert a la regeneration : sans lui, refaire l'identifiant d'un
  * compte qui s'appelle deja `jean.dupont` rendrait `jean.dupont2`, le compte
  * entrant en collision avec lui-meme.
+ *
+ * `entrepriseId` scope l'unicite a une entreprise (deux entreprises distinctes
+ * peuvent chacune avoir un "jean.dupont"). Laisser a `null` pour un compte
+ * operateur, unique parmi les seuls operateurs (voir 029_operateur_plateforme.sql).
  */
-async function genererNomUtilisateurUnique(client, prenom, nom, { exclureId = null } = {}) {
+async function genererNomUtilisateurUnique(client, prenom, nom, { exclureId = null, entrepriseId = null } = {}) {
   const base = construireBase(prenom, nom);
   if (!base) {
     throw new Error('Le prenom et le nom ne permettent pas de construire un identifiant');
@@ -34,8 +38,11 @@ async function genererNomUtilisateurUnique(client, prenom, nom, { exclureId = nu
   for (let suffixe = 1; suffixe <= 100; suffixe += 1) {
     const candidat = suffixe === 1 ? base : `${base}${suffixe}`;
     const { rows } = await client.query(
-      'SELECT 1 FROM utilisateurs WHERE nom_utilisateur = $1 AND ($2::int IS NULL OR id <> $2)',
-      [candidat, exclureId]
+      `SELECT 1 FROM utilisateurs
+        WHERE nom_utilisateur = $1
+          AND entreprise_id IS NOT DISTINCT FROM $2
+          AND ($3::int IS NULL OR id <> $3)`,
+      [candidat, entrepriseId, exclureId]
     );
     if (rows.length === 0) return candidat;
   }

@@ -1271,30 +1271,6 @@ async function vieAdministrative(client, contexte) {
   // raconter autre chose que ce que la base contient.
   await client.query("UPDATE parametres SET methode_valorisation = 'FIFO' WHERE id = 1");
 
-  // Un second compte administrateur, cree pour la comptable.
-  const comptable = employes.find((e) => e.config.fonction === 'Comptable');
-  if (comptable) {
-    const { rows: existe } = await client.query(
-      "SELECT id FROM utilisateurs WHERE nom_utilisateur = 'chantal.eyenga'"
-    );
-    if (!existe.length) {
-      const bcrypt = require('bcrypt');
-      const hash = await bcrypt.hash('Machibel@2026', 10);
-      const { rows } = await client.query(
-        `INSERT INTO utilisateurs (prenom, nom, nom_utilisateur, password_hash, role, actif, created_at)
-         VALUES ($1,$2,$3,$4,'admin',true,$5) RETURNING id`,
-        [comptable.prenom, comptable.nom, 'chantal.eyenga', hash, '2024-04-15T10:00:00']
-      );
-      await audit(client, {
-        type: 'utilisateur_creation', entiteId: rows[0].id, utilisateurId: adminId,
-        date: '2024-04-15T10:00:00',
-        details: { nom_utilisateur: 'chantal.eyenga' },
-        apres: { prenom: comptable.prenom, nom: comptable.nom, nom_utilisateur: 'chantal.eyenga', role: 'admin' },
-      });
-      compte += 1;
-    }
-  }
-
   log(`Operations d'administration : ${compte}`);
 }
 
@@ -1461,4 +1437,3 @@ if (require.main === module) {
       process.exit(1);
     });
 }
-

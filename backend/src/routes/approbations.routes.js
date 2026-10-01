@@ -1,0 +1,13 @@
+const express = require('express');
+const router = express.Router();
+const { requireAuth } = require('../middleware/auth.middleware');
+const { requirePermission } = require('../middleware/permission.middleware');
+const a = require('../controllers/approbations.controller');
+router.use(requireAuth);
+router.get('/', requirePermission('approbations', 'voir'), a.list);
+router.get('/approbateurs', requirePermission('approbations', 'creer'), a.approbateurs);
+router.post('/', requirePermission('approbations', 'creer'), a.create);
+router.post('/:id/soumettre', requirePermission('approbations', 'modifier'), a.soumettre);
+router.post('/:id/approuver', requirePermission('approbations', 'valider'), a.approuver);
+router.post('/:id/rejeter', requirePermission('approbations', 'rejeter'), a.rejeter);
+module.exports = router;

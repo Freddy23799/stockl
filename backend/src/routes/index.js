@@ -2,7 +2,12 @@ const express = require('express');
 const router = express.Router();
 
 router.use('/auth', require('./auth.routes'));
+router.use('/entreprises', require('./entreprises.routes'));
+router.use('/clients', require('./clients.routes'));
+router.use('/approbations', require('./approbations.routes'));
+router.use('/devis', require('./devis.routes'));
 router.use('/utilisateurs', require('./utilisateurs.routes'));
+router.use('/roles', require('./roles.routes'));
 router.use('/produits', require('./produits.routes'));
 router.use('/categories', require('./referentiels.routes').categories);
 router.use('/marques', require('./referentiels.routes').marques);

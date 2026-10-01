@@ -1,0 +1,12 @@
+const express = require('express');
+const router = express.Router();
+const { requireAuth } = require('../middleware/auth.middleware');
+const { requirePermission } = require('../middleware/permission.middleware');
+const clients = require('../controllers/clients.controller');
+router.use(requireAuth);
+router.get('/', requirePermission('clients', 'voir'), clients.list);
+router.get('/:id', requirePermission('clients', 'voir'), clients.getById);
+router.post('/', requirePermission('clients', 'creer'), clients.create);
+router.put('/:id', requirePermission('clients', 'modifier'), clients.update);
+router.patch('/:id/desactiver', requirePermission('clients', 'archiver'), clients.desactiver);
+module.exports = router;

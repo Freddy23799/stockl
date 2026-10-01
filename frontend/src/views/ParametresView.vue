@@ -136,12 +136,14 @@ async function charger() {
   loading.value = true
   erreur.value = ''
   try {
-    const [paramsRes, utilisateursRes] = await Promise.all([
+    const [paramsRes, utilisateursRes, rolesRes] = await Promise.all([
       api.get('/parametres'),
       api.get('/utilisateurs'),
+      api.get('/roles'),
     ])
     parametres.value = paramsRes.data
     utilisateurs.value = utilisateursRes.data
+    ROLES_COMPTE.value = rolesRes.data.map((r) => ({ value: r.code, label: r.nom }))
     remplirEtablissement(paramsRes.data)
   } catch (err) {
     erreur.value = err.response?.data?.message || 'Erreur de chargement'
@@ -377,13 +379,8 @@ const compteSoumission = ref(false)
 // ferme, il est definitivement irrecuperable.
 const compteCree = ref(null)
 
-const ROLES_COMPTE = [
-  { value: 'admin', label: 'Administrateur' },
-  { value: 'vendeuse', label: 'Vendeuse' },
-  { value: 'comptabilite', label: 'Comptabilite' },
-  { value: 'gestionnaire_stock', label: 'Gestionnaire de stock' },
-]
-const LABEL_ROLE = Object.fromEntries(ROLES_COMPTE.map((r) => [r.value, r.label]))
+const ROLES_COMPTE = ref([])
+const LABEL_ROLE = computed(() => Object.fromEntries(ROLES_COMPTE.value.map((r) => [r.value, r.label])))
 
 // Chargee seulement quand necessaire : un role Vendeuse doit etre rattache a
 // un employe existant (voir vendeuses.controller.js, meme logique cote code

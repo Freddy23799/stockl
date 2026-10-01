@@ -26,6 +26,7 @@ const ROLE_LABELS = {
   vendeuse: 'Vendeuse',
   comptabilite: 'Comptabilite',
   gestionnaire_stock: 'Gestionnaire de stock',
+  operateur: 'Operateur plateforme',
 }
 const roleLabel = computed(() => ROLE_LABELS[auth.user?.role] || '')
 
@@ -50,6 +51,7 @@ async function marquerToutLu() {
 const alertes = ref(0)
 
 async function chargerAlertes() {
+  if (auth.user?.role === 'operateur') return
   try {
     const { data } = await api.get('/stock/alertes')
     alertes.value = data.length
@@ -65,7 +67,15 @@ async function chargerAlertes() {
 // (auth.hasRole() renvoie toujours vrai pour lui), les roles restreints ne
 // voient que leur perimetre. Le backend applique le meme perimetre route par
 // route - ce filtrage n'est qu'un confort d'affichage, pas la securite reelle.
-const sections = computed(() => [
+//
+// L'operateur plateforme est hors de ce modele : il ne gere aucune boutique,
+// donc rien de ce qui suit (produits, stock, ventes...) ne le concerne. Cas a
+// part plutot que d'ajouter une exclusion sur chaque ligne ci-dessous.
+const sections = computed(() => {
+  if (auth.user?.role === 'operateur') {
+    return [{ titre: 'Plateforme', items: [{ to: '/entreprises', label: 'Entreprises', icon: 'building' }] }]
+  }
+  return [
   {
     titre: 'Pilotage',
     items: [
@@ -76,6 +86,9 @@ const sections = computed(() => [
   {
     titre: 'Activite',
     items: [
+      ...(auth.hasRole('direction', 'comptabilite', 'secretaire', 'responsable_commercial', 'commercial', 'support') ? [{ to: '/clients', label: 'Clients', icon: 'users' }] : []),
+      ...(auth.hasRole('direction', 'responsable_commercial', 'commercial') ? [{ to: '/devis', label: 'Devis et commandes', icon: 'receipt' }] : []),
+      ...(auth.hasRole('direction', 'manager', 'gestionnaire_stock', 'comptabilite', 'responsable_rh', 'employe') ? [{ to: '/approbations', label: 'Approbations', icon: 'check' }] : []),
       ...(modules.ventes && auth.hasRole('vendeuse', 'comptabilite', 'gestionnaire_stock')
         ? [{ to: '/ventes', label: 'Ventes', icon: 'cart' }] : []),
       ...(modules.depenses && auth.hasRole('comptabilite') ? [{ to: '/depenses', label: 'Depenses', icon: 'receipt' }] : []),
@@ -101,20 +114,27 @@ const sections = computed(() => [
     titre: 'Administration',
     items: [
       ...(auth.isAdmin ? [{ to: '/historique', label: 'Historique', icon: 'history' }] : []),
+      ...(auth.isAdmin ? [{ to: '/roles', label: 'Roles et permissions', icon: 'shield' }] : []),
       ...(auth.isAdmin ? [{ to: '/parametres', label: 'Parametres', icon: 'settings' }] : []),
     ],
   },
-].filter((s) => s.items.length))
+  ].filter((s) => s.items.length)
+})
 
 // Navigation basse : quatre destinations maximum, choisies pour l'usage
 // quotidien en boutique. Le reste passe par le menu lateral.
-const navBasse = computed(() => [
-  ...(auth.hasRole('comptabilite') ? [{ to: '/', label: 'Accueil', icon: 'dashboard' }] : []),
-  ...(modules.ventes && auth.hasRole('vendeuse', 'comptabilite', 'gestionnaire_stock')
-    ? [{ to: '/ventes', label: 'Ventes', icon: 'cart' }] : []),
-  { to: '/stock', label: 'Stock', icon: 'layers', badge: alertes.value || null },
-  { to: '/produits', label: 'Produits', icon: 'package' },
-])
+const navBasse = computed(() => {
+  if (auth.user?.role === 'operateur') {
+    return [{ to: '/entreprises', label: 'Entreprises', icon: 'building' }]
+  }
+  return [
+    ...(auth.hasRole('comptabilite') ? [{ to: '/', label: 'Accueil', icon: 'dashboard' }] : []),
+    ...(modules.ventes && auth.hasRole('vendeuse', 'comptabilite', 'gestionnaire_stock')
+      ? [{ to: '/ventes', label: 'Ventes', icon: 'cart' }] : []),
+    { to: '/stock', label: 'Stock', icon: 'layers', badge: alertes.value || null },
+    { to: '/produits', label: 'Produits', icon: 'package' },
+  ]
+})
 
 const titreCourant = computed(() => {
   for (const s of sections.value) {

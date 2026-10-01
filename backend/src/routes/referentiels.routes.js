@@ -1,5 +1,6 @@
 const express = require('express');
-const { requireAuth, requireRole } = require('../middleware/auth.middleware');
+const { requireAuth } = require('../middleware/auth.middleware');
+const { requirePermission } = require('../middleware/permission.middleware');
 const { categories, marques } = require('../controllers/referentiel.controller');
 
 // Categories (rayons) et marques des produits.
@@ -9,10 +10,10 @@ const { categories, marques } = require('../controllers/referentiel.controller')
 // pour le catalogue lui-meme.
 function routeur(controleur) {
   const router = express.Router();
-  router.get('/', requireAuth, controleur.list);
-  router.post('/', requireAuth, requireRole('admin'), controleur.create);
-  router.put('/:id', requireAuth, requireRole('admin'), controleur.update);
-  router.delete('/:id', requireAuth, requireRole('admin'), controleur.supprimer);
+  router.get('/', requireAuth, requirePermission('referentiels', 'voir'), controleur.list);
+  router.post('/', requireAuth, requirePermission('referentiels', 'creer'), controleur.create);
+  router.put('/:id', requireAuth, requirePermission('referentiels', 'modifier'), controleur.update);
+  router.delete('/:id', requireAuth, requirePermission('referentiels', 'supprimer'), controleur.supprimer);
   return router;
 }
 

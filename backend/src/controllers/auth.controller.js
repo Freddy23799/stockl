@@ -3,6 +3,20 @@ const jwt = require('jsonwebtoken');
 const pool = require('../config/db');
 const { jwtSecret } = require('../config');
 
+// Garde-fou TEMPORAIRE de la generalisation multi-entreprise.
+//
+// L'entreprise 1 (MACHIBEL) est la seule dont les ecrans metier (produits,
+// ventes, stock, rapports...) filtrent reellement par entreprise_id : le reste
+// des controleurs n'a pas encore ete bascule (travail en cours, voir le plan
+// d'architecture). Un compte cree pour une AUTRE entreprise existe deja en
+// base (l'operateur peut la creer), mais le laisser se connecter aujourd'hui
+// verrait les donnees de MACHIBEL sur tous les ecrans non encore isoles -
+// une fuite entre clients, pas juste une fonctionnalite incomplete.
+//
+// A retirer entierement une fois tous les controleurs scoped par entreprise
+// (et, mieux, remplace par l'isolation en base - Row-Level Security).
+const ENTREPRISE_ISOLATION_EFFECTIVE = new Set([1]);
+
 // Seuls les administrateurs se connectent au systeme. Les vendeuses ne sont
 // pas des utilisateurs - elles sont identifiees par un code a 6 chiffres au
 // moment de la vente, jamais par une session.
@@ -29,8 +43,16 @@ async function login(req, res) {
     return res.status(401).json({ message: 'Identifiants invalides' });
   }
 
+  if (utilisateur.entreprise_id && !ENTREPRISE_ISOLATION_EFFECTIVE.has(utilisateur.entreprise_id)) {
+    return res.status(403).json({
+      message: 'Votre entreprise a bien ete creee, mais la plateforme n\'est pas encore prete '
+        + 'a l\'accueillir (isolation des donnees en cours de finalisation). Reessayez plus tard.',
+      code: 'ENTREPRISE_NON_ISOLEE',
+    });
+  }
+
   const token = jwt.sign(
-    { id: utilisateur.id, role: utilisateur.role },
+    { id: utilisateur.id, role: utilisateur.role, entrepriseId: utilisateur.entreprise_id },
     jwtSecret,
     { expiresIn: '12h' }
   );
@@ -44,13 +66,14 @@ async function login(req, res) {
       nom_utilisateur: utilisateur.nom_utilisateur,
       email: utilisateur.email,
       role: utilisateur.role,
+      entreprise_id: utilisateur.entreprise_id,
     },
   });
 }
 
 async function me(req, res) {
   const { rows } = await pool.query(
-    'SELECT id, prenom, nom, nom_utilisateur, email, role, actif FROM utilisateurs WHERE id = $1',
+    'SELECT id, prenom, nom, nom_utilisateur, email, role, entreprise_id, actif FROM utilisateurs WHERE id = $1',
     [req.user.id]
   );
   const utilisateur = rows[0];

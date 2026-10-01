@@ -22,13 +22,23 @@ async function requireAuth(req, res, next) {
   }
 
   const { rows } = await pool.query(
-    'SELECT actif, tokens_invalides_avant FROM utilisateurs WHERE id = $1',
+    `SELECT u.actif, u.tokens_invalides_avant, u.entreprise_id, e.actif AS entreprise_actif
+       FROM utilisateurs u
+       LEFT JOIN entreprises e ON e.id = u.entreprise_id
+      WHERE u.id = $1`,
     [payload.id]
   );
   const compte = rows[0];
 
   if (!compte || !compte.actif) {
     return res.status(401).json({ message: 'Compte introuvable ou desactive' });
+  }
+
+  // Desactiver une entreprise doit fermer immediatement l'acces de tous ses
+  // comptes, meme ceux dont le jeton est encore dans sa fenetre de validite -
+  // meme logique que la desactivation d'un compte individuel ci-dessus.
+  if (compte.entreprise_id && compte.entreprise_actif === false) {
+    return res.status(401).json({ message: 'Entreprise desactivee' });
   }
 
   // `iat` est en secondes depuis l'epoque ; la colonne est tronquee a la seconde
@@ -54,4 +64,16 @@ function requireRole(...roles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+// Reserve aux comptes operateur (exploitant de la plateforme), voir migration
+// 029. Un compte operateur n'a pas d'entreprise (entrepriseId null dans le
+// jeton) : c'est le role qui fait autorite ici, pas requireRole('operateur')
+// seul, pour rendre l'intention explicite sur les routes de gestion des
+// entreprises clientes.
+function requireOperateurPlateforme(req, res, next) {
+  if (!req.user || req.user.role !== 'operateur') {
+    return res.status(403).json({ message: 'Reserve a l\'operateur de la plateforme' });
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireRole, requireOperateurPlateforme };

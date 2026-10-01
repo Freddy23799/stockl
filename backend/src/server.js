@@ -15,6 +15,7 @@ const app = require('./app');
 const pool = require('./config/db');
 const { runMigrations } = require('./db/migrate');
 const { bootstrapAdmin } = require('./db/bootstrap-admin');
+const { bootstrapOperateur } = require('./db/bootstrap-operateur');
 const { amorcerDemonstration } = require('./db/amorcage-demo');
 const { appliquerEnrichissements } = require('./db/enrichissements');
 const { restaurerLogo } = require('./db/restaurer-logo');
@@ -36,6 +37,7 @@ async function demarrer() {
   preparerDossiersUploads();
   await runMigrations();
   await bootstrapAdmin();
+  await bootstrapOperateur();
 
   // Avant l'ecoute, comme les migrations : une notion ajoutee par une mise a
   // jour doit etre renseignee sur les donnees existantes AVANT que l'API ne les

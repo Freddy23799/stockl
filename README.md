@@ -63,7 +63,7 @@ administrateur initial (voir [backend/src/db/bootstrap-admin.js](backend/src/db/
 
 | Identifiant | Mot de passe |
 |-------------|--------------|
-| `admin`     | `Machibel@2026` |
+| `admin`     | `admin123` |
 
 Ces identifiants sont **statiques et publics** (ils sont dans le code) :
 **a changer des la premiere connexion**, ecran Parametres > Mon mot de passe.
